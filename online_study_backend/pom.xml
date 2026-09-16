@@ -17,6 +17,7 @@
     <properties>
         <java.version>21</java.version>
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <jsqlparser.version>4.9</jsqlparser.version>
         <jjwt.version>0.12.6</jjwt.version>
     </properties>
     <dependencies>
@@ -40,6 +41,16 @@
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
             <version>${mybatis-plus.version}</version>
+        </dependency>
+        <!-- SQL 解析器：分页插件与"防全表更新"插件的底层依赖。
+             注意：MyBatis-Plus 从 3.5.6 起把 jsqlparser 改成了「可选依赖」，不再自动传递，
+             而 PaginationInnerInterceptor / BlockAttackInnerInterceptor 运行时确实要用它。
+             不显式引入的话，编译能过（编译期不解析），但启动或第一次分页查询时会抛
+             NoClassDefFoundError: net/sf/jsqlparser/... —— 这是 3.5.6+ 最常见的踩坑点。 -->
+        <dependency>
+            <groupId>com.github.jsqlparser</groupId>
+            <artifactId>jsqlparser</artifactId>
+            <version>${jsqlparser.version}</version>
         </dependency>
 
         <!-- MySQL 驱动：新坐标 com.mysql:mysql-connector-j，版本由 Boot 父 POM 管理 -->
