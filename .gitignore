@@ -1,0 +1,58 @@
+# ==================== 敏感配置：绝不提交 ====================
+# 真实配置含数据库密码，仓库只提交 application.yml.example
+application.yml
+application-*.yml
+application.yaml
+*.env
+*.env.*
+.env
+.env.*
+
+# ==================== Java / Maven ====================
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+*.jar
+*.war
+*.log
+logs/
+
+# ==================== Node / 前端 ====================
+node_modules/
+dist/
+dist-ssr/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==================== IDE / 编辑器 ====================
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+.obsidian/
+
+# ==================== 操作系统 ====================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==================== 运行时数据 ====================
+uploads/
+.deploy_tmp/
+
+# ==================== 本地工具状态 ====================
+.workbuddy/
+
+# ==================== 本地工作材料：绝不进代码仓库 ====================
+# _local/ 存放的是"给自己看"的东西：个人求职材料 + 工作过程文档
+# （简历、项目说明书、改造日志、前端改造方案、功能对标清单、废弃脚本等）。
+# 这些内容不适合出现在开源仓库里，统一放这个目录，整体排除。
+_local/
+# 已废弃的危险脚本（deploy.ps1 会强杀进程并删除 MySQL 目录），按名字再挡一道
+deploy.ps1
+# 双保险：即使简历类文件被误放到别处，也不会被提交
+简历-*.md
+*简历*.md
