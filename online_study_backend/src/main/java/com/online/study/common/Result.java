@@ -1,5 +1,7 @@
 package com.online.study.common;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.io.Serializable;
 
 /**
@@ -78,7 +80,14 @@ public class Result<T> implements Serializable {
 
     // ==================== 便捷判断 ====================
 
-    /** 是否成功，供内部逻辑使用 */
+    /**
+     * 是否成功，仅供内部逻辑使用。
+     *
+     * <p>必须加 {@code @JsonIgnore}：Jackson 会把 {@code isXxx()} 当成名为 {@code xxx}
+     * 的属性一起序列化，不加的话每个响应 JSON 里都会凭空多出一个 {@code "success"} 字段
+     * （例如 {@code {"code":401,...,"success":false}}），属于接口契约污染。
+     */
+    @JsonIgnore
     public boolean isSuccess() {
         return ResultCode.SUCCESS.getCode() == (this.code == null ? -1 : this.code);
     }
