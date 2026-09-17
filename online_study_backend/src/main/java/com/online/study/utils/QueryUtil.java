@@ -43,6 +43,14 @@ public final class QueryUtil {
     /** 实体类 → 允许作为查询条件的列名集合 */
     private static final Map<Class<?>, Set<String>> COLUMN_CACHE = new ConcurrentHashMap<>();
 
+    /**
+     * 分页保留字段。
+     *
+     * <p>这些 key 由 {@link com.online.study.common.PageQuery} 消费，<b>不属于查询条件</b>，
+     * 所以要静默跳过 —— 否则每一次分页请求都会打出一条"非法字段"警告，把日志刷满。
+     */
+    private static final Set<String> PAGINATION_KEYS = Set.of("pageNum", "pageSize", "current", "size");
+
     private QueryUtil() {
         // 工具类不允许实例化
     }
@@ -63,6 +71,10 @@ public final class QueryUtil {
 
         params.forEach((key, value) -> {
             if (key == null || value == null || "".equals(value.toString())) {
+                return;
+            }
+            // 分页参数由 PageQuery 消费，不属于查询条件，静默跳过（不算非法字段）
+            if (PAGINATION_KEYS.contains(key)) {
                 return;
             }
             String column = camelToUnderline(key);
