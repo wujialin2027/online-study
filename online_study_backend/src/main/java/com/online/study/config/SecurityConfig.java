@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -50,6 +51,10 @@ import java.util.List;
  */
 @Configuration
 @EnableWebSecurity
+// 开启方法级权限控制，使接口上可以写 @PreAuthorize("hasRole('ADMIN')") 这类注解。
+// 相比把规则全部堆在 filterChain 里，注解能精确到某一个接口（例如
+// /course/audit 限管理员、/course-apply/apply 限学员），可读性更好。
+@EnableMethodSecurity
 public class SecurityConfig {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();

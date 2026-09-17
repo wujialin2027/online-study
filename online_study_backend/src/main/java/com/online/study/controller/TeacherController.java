@@ -14,6 +14,7 @@ import com.online.study.common.PageQuery;
 import com.online.study.common.PageResult;
 import com.online.study.common.Result;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.online.study.annotation.OperationLog;
 
 @RestController
 @RequestMapping("/teacher")
@@ -63,6 +64,7 @@ public class TeacherController {
     }
 
     @PostMapping("/update-password")
+    @OperationLog(module = "用户", operation = "修改密码")
     public boolean updatePassword(@RequestBody Map<String, Object> params) {
         Object teacherId = params.get("teacherId");
         Object newPassword = params.get("newPassword");

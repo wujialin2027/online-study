@@ -1,18 +1,36 @@
 package com.online.study.controller;
 
-import com.online.study.entity.CourseApply;
-import com.online.study.service.CourseApplyService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.*;
-import java.util.List;
-import java.util.Map;
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.online.study.utils.QueryUtil;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.online.study.annotation.OperationLog;
 import com.online.study.common.PageQuery;
 import com.online.study.common.PageResult;
 import com.online.study.common.Result;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.online.study.common.ResultCode;
+import com.online.study.entity.CourseApply;
+import com.online.study.exception.BizException;
+import com.online.study.service.CourseApplyService;
+import com.online.study.utils.QueryUtil;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 报名接口
+ *
+ * <h3>改造点</h3>
+ * <ol>
+ *   <li><b>新增报名接口 {@code /apply}</b>：带名额原子占位 + 唯一索引兜底，
+ *       解决并发超卖与重复报名。原代码是前端直接调 {@code /save} 插一条记录，
+ *       既不看名额也不防重复。</li>
+ *   <li><b>审核与名额联动</b>：报名被驳回时释放名额，从驳回状态恢复时重新抢名额。</li>
+ *   <li><b>撤销报名走 {@code cancelApply}</b>：原来直接 {@code removeById}，
+ *       删除后名额不会退回，课程会被"少算"一个人。</li>
+ * </ol>
+ */
 @RestController
 @RequestMapping("/course-apply")
 public class CourseApplyController {
@@ -43,13 +61,80 @@ public class CourseApplyController {
         return Result.success(PageResult.of(service.page(page, wrapper)));
     }
 
-    @PostMapping("/save")
-    public boolean save(@RequestBody CourseApply entity) {
-        return service.saveOrUpdate(entity);
+    /**
+     * 学员报名课程（名额已满时返回业务错误）。
+     * 请求体示例：{"courseId": 3}
+     *
+     * <p>学员 ID 由服务端从 JWT 取，不接受前端传值 ——
+     * 否则可以替别人报名（占用他人名额 / 制造脏数据）。
+     */
+    @PostMapping("/apply")
+    @PreAuthorize("hasRole('STUDENT')")
+    @OperationLog(module = "报名", operation = "学员报名")
+    public Result<Void> apply(@RequestBody Map<String, Object> body) {
+        Object courseId = body.get("courseId");
+        if (courseId == null) {
+            throw new BizException(ResultCode.PARAM_ERROR, "courseId 不能为空");
+        }
+        service.apply(Integer.valueOf(courseId.toString()));
+        return Result.success();
     }
 
+    /**
+     * 审核报名（教师 / 管理员）。
+     * 请求体示例：{"applyId": 5, "auditStatus": 1, "auditRemark": "符合报名条件"}
+     * auditStatus：1 通过 / 2 驳回（驳回必填原因）/ 0 撤销驳回。
+     */
+    @PostMapping("/audit")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
+    @OperationLog(module = "报名", operation = "审核报名")
+    public Result<Void> audit(@RequestBody Map<String, Object> body) {
+        Object applyId = body.get("applyId");
+        Object auditStatus = body.get("auditStatus");
+        Object remark = body.get("auditRemark");
+
+        if (applyId == null || auditStatus == null) {
+            throw new BizException(ResultCode.PARAM_ERROR, "applyId 与 auditStatus 不能为空");
+        }
+        service.auditApply(
+                Integer.valueOf(applyId.toString()),
+                Integer.valueOf(auditStatus.toString()),
+                remark == null ? null : remark.toString());
+        return Result.success();
+    }
+
+    /**
+     * 兼容旧前端的审核入口。
+     *
+     * <p>旧版前端点「通过 / 驳回」时是把整条记录交给本接口保存的。
+     * 为了不让页面立刻失效，这里识别「审核状态确实发生变化」的请求并转交审核逻辑；
+     * 其余情况（例如学员想凭空插一条报名）一律拒绝，不再允许直接写库。
+     */
+    @PostMapping("/save")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
+    public Result<Void> save(@RequestBody CourseApply entity) {
+        if (entity.getApplyId() != null && entity.getAuditStatus() != null) {
+            CourseApply db = service.getById(entity.getApplyId());
+            if (db == null) {
+                throw new BizException(ResultCode.DATA_NOT_FOUND, "报名记录不存在");
+            }
+            if (!entity.getAuditStatus().equals(db.getAuditStatus())) {
+                service.auditApply(entity.getApplyId(), entity.getAuditStatus(), entity.getAuditRemark());
+                return Result.success();
+            }
+            // 状态没变，视为重复提交，直接返回成功
+            return Result.success();
+        }
+        throw new BizException("报名请调用 /course-apply/apply，审核请调用 /course-apply/audit");
+    }
+
+    /**
+     * 撤销报名：学员只能撤自己的，管理员可撤任意一条，撤销后释放名额。
+     */
     @DeleteMapping("/{id}")
-    public boolean delete(@PathVariable Integer id) {
-        return service.removeById(id);
+    @OperationLog(module = "报名", operation = "撤销报名")
+    public Result<Boolean> delete(@PathVariable Integer id) {
+        service.cancelApply(id);
+        return Result.success(true);
     }
 }

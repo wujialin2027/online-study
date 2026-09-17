@@ -19,6 +19,11 @@ public enum ResultCode {
     UNAUTHORIZED(401, "未登录或登录已过期"),
     FORBIDDEN(403, "没有权限执行该操作"),
     NOT_FOUND(404, "请求的资源不存在"),
+    /**
+     * 数据不存在：语义比 NOT_FOUND 更具体，
+     * 用于「课程不存在」「报名记录不存在」这类业务数据缺失的场景。
+     */
+    DATA_NOT_FOUND(404, "数据不存在"),
     METHOD_NOT_ALLOWED(405, "请求方法不支持"),
 
     BIZ_ERROR(500, "业务处理失败"),

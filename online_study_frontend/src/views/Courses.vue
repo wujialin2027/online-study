@@ -21,12 +21,24 @@
         <el-table :data="enrolledCourses" style="width: 100%">
           <el-table-column prop="courseName" label="课程名称"></el-table-column>
           <el-table-column prop="trainCycle" label="培训周期"></el-table-column>
+          <el-table-column label="报名状态" width="110">
+            <template #default="scope">
+              <el-tag :type="scope.row.applyStatus === 1 ? 'success' : (scope.row.applyStatus === 2 ? 'danger' : 'warning')">
+                {{ scope.row.applyStatus === 1 ? '已通过' : (scope.row.applyStatus === 2 ? '已驳回' : '待审核') }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="applyRemark" label="审核意见" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.applyRemark || '—' }}</template>
+          </el-table-column>
           <el-table-column prop="publishTime" label="发布时间">
             <template #default="scope">{{ formatDate(scope.row.publishTime) }}</template>
           </el-table-column>
           <el-table-column label="操作">
             <template #default="scope">
-              <el-button size="small" type="primary" @click="viewResources(scope.row)">资源下载</el-button>
+              <!-- 只有审核通过后才能下载课件资源 -->
+              <el-button size="small" type="primary" v-if="scope.row.applyStatus === 1" @click="viewResources(scope.row)">资源下载</el-button>
+              <span v-else style="color: #909399; font-size: 12px">审核通过后可下载</span>
             </template>
           </el-table-column>
         </el-table>
@@ -42,6 +54,10 @@
                 {{ scope.row.auditStatus === 1 ? '已通过' : (scope.row.auditStatus === 2 ? '已驳回' : '待审核') }}
               </el-tag>
             </template>
+          </el-table-column>
+          <!-- 被驳回时展示管理员填写的原因，教师据此修改后重新提交 -->
+          <el-table-column prop="auditRemark" label="审核意见" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.auditRemark || '—' }}</template>
           </el-table-column>
           <el-table-column label="操作" width="300">
             <template #default="scope">
@@ -225,14 +241,24 @@ const fetchCourses = async () => {
 
 const fetchEnrolledCourses = async () => {
   try {
-    const appliesRes = await request.post('/course-apply/query', { studentId: user.value.studentId, auditStatus: 1 })
-    const courseIds = appliesRes.map(a => a.courseId)
-    if (courseIds.length === 0) {
+    // 查该学员的全部报名（不过滤状态）：待审核、已驳回的也要能看到进度与驳回原因，
+    // 否则学员报名后不知道卡在哪一步
+    const appliesRes = await request.post('/course-apply/query', { studentId: user.value.studentId })
+    if (!appliesRes || appliesRes.length === 0) {
       enrolledCourses.value = []
       return
     }
     const allCourses = await request.post('/course/query', { auditStatus: 1 })
-    enrolledCourses.value = allCourses.filter(c => courseIds.includes(c.courseId))
+    const courseMap = new Map(allCourses.map(c => [c.courseId, c]))
+    // 把报名状态 / 审核意见合并到课程行上，供表格展示
+    enrolledCourses.value = appliesRes
+      .filter(a => courseMap.has(a.courseId))
+      .map(a => ({
+        ...courseMap.get(a.courseId),
+        applyStatus: a.auditStatus,
+        applyRemark: a.auditRemark,
+        applyTime: a.applyTime,
+      }))
   } catch (e) {
     console.error(e)
   }
@@ -274,15 +300,35 @@ const handleTabChange = () => {
 
 const auditApply = async (apply, status) => {
   try {
-    apply.auditStatus = status
-    apply.auditTeacherId = status === 0 ? null : user.value.teacherId
-    await request.post('/course-apply/save', apply)
+    // 驳回必须填写原因：服务端强校验，并会同步释放该课程占用的名额，
+    // 学员端也能看到这条原因，避免反复提交。
+    let remark = null
+    if (status === 2) {
+      const { value } = await ElMessageBox.prompt('请填写驳回原因，学员端将看到这条说明', '驳回报名', {
+        confirmButtonText: '确定驳回',
+        cancelButtonText: '取消',
+        inputPlaceholder: '例如：不符合报名条件 / 该课程名额已满',
+        inputValidator: (v) => (v && v.trim() ? true : '驳回原因不能为空'),
+        type: 'warning',
+      })
+      remark = value.trim()
+    }
+
+    // 审核走专用接口：审核人由服务端从 JWT 取，不再由前端传 teacherId；
+    // 同时服务端会处理「驳回释放名额 / 撤销驳回重新抢名额」
+    await request.post('/course-apply/audit', {
+      applyId: apply.applyId,
+      auditStatus: status,
+      auditRemark: remark,
+    })
     ElMessage.success(
       status === 1 ? '报名已通过' : (status === 2 ? '报名已驳回' : '已撤回驳回，报名恢复为待审核')
     )
     fetchApplies()
   } catch (e) {
-    ElMessage.error('审核失败')
+    if (e === 'cancel' || e === 'close') return
+    // 例如「课程名额已满，无法恢复该报名」
+    ElMessage.error(e?.message || '审核失败')
   }
 }
 
@@ -307,30 +353,17 @@ const handleAddCourse = async () => {
 
 const applyCourse = async (course) => {
   try {
-    // 检查是否已经报名过
-    const checkRes = await request.post('/course-apply/query', { studentId: user.value.studentId, courseId: course.courseId })
-    if (checkRes && checkRes.length > 0) {
-      const applyRecord = checkRes[0]
-      if (applyRecord.auditStatus === 0) {
-        ElMessage.warning('你已报名该课程，请等待教师审核。')
-      } else if (applyRecord.auditStatus === 1) {
-        ElMessage.warning('你已报名成功，无需重复报名。')
-      } else {
-        ElMessage.warning('你的报名曾被驳回，请联系教师。')
-      }
-      return
-    }
-
-    const applyData = {
-      studentId: user.value.studentId,
-      courseId: course.courseId,
-      applyTime: new Date(),
-      auditStatus: 0 // 待教师审核
-    }
-    await request.post('/course-apply/save', applyData)
+    // 报名改由服务端「原子占位」接口处理：
+    //   服务端在一条 UPDATE 里同时完成「名额是否已满」的判断与占用，
+    //   并用唯一索引兜底重复报名；名额满 / 已报名会以业务错误返回。
+    // 前端不再做「先查是否已报名、再插入」的预检查 ——
+    // 那种检查在并发下无效（两个请求会同时通过检查），而且多一次网络往返。
+    await request.post('/course-apply/apply', { courseId: course.courseId })
     ElMessage.success('报名申请已提交，等待教师审核')
+    fetchCourses()
   } catch (e) {
-    ElMessage.error('报名失败')
+    // 服务端业务提示（如「课程名额已满（名额上限 5 人）」）优先展示
+    ElMessage.error(e?.message || '报名失败')
   }
 }
 

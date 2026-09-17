@@ -141,12 +141,34 @@ const changePassword = async (user, type) => {
 }
 
 const auditCourse = async (course, status) => {
-  course.auditStatus = status
-  const user = JSON.parse(localStorage.getItem('user') || '{}')
-  course.auditAdminId = user.adminId
-  await request.post('/course/save', course)
-  ElMessage.success(status === 1 ? '审核已通过' : '已驳回')
-  fetchCourses()
+  try {
+    // 驳回必须填写原因：服务端会强校验并把原因落到 course.audit_remark，
+    // 教师端据此知道该改什么，所以这里必须先收集再提交。
+    let remark = null
+    if (status === 2) {
+      const { value } = await ElMessageBox.prompt('请填写驳回原因，教师端将看到这条说明', '驳回课程', {
+        confirmButtonText: '确定驳回',
+        cancelButtonText: '取消',
+        inputPlaceholder: '例如：课程介绍信息不完整 / 培训周期不合理',
+        inputValidator: (v) => (v && v.trim() ? true : '驳回原因不能为空'),
+        type: 'warning',
+      })
+      remark = value.trim()
+    }
+
+    // 审核走专用接口，权限（仅管理员）与留痕（审核人 / 时间）都由服务端写入
+    await request.post('/course/audit', {
+      courseId: course.courseId,
+      auditStatus: status,
+      auditRemark: remark,
+    })
+    ElMessage.success(status === 1 ? '审核已通过' : '已驳回')
+    fetchCourses()
+  } catch (e) {
+    // 用户点了取消 / 关闭输入框，不算失败
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e?.message || '审核失败')
+  }
 }
 
 const deleteCourse = async (course) => {
