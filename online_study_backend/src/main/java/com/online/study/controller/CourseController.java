@@ -1,15 +1,15 @@
 package com.online.study.controller;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.online.study.entity.Course;
-import com.online.study.entity.Homework;
-import com.online.study.service.*;
+import com.online.study.service.CourseService;
+import com.online.study.utils.QueryUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
+
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 
 @RestController
 @RequestMapping("/course")
@@ -17,37 +17,16 @@ public class CourseController {
 
     @Autowired
     private CourseService service;
-    
-    @Autowired
-    private CourseResourceService courseResourceService;
-    
-    @Autowired
-    private CourseApplyService courseApplyService;
-    
-    @Autowired
-    private HomeworkService homeworkService;
-    
-    @Autowired
-    private HomeworkSubmitService homeworkSubmitService;
-    
-    @Autowired
-    private ScoreService scoreService;
 
     @GetMapping("/list")
     public List<Course> list() {
         return service.list();
     }
 
+    /** 条件查询：条件经 QueryUtil 白名单过滤，杜绝列名拼接注入 */
     @PostMapping("/query")
     public List<Course> query(@RequestBody Map<String, Object> params) {
-        QueryWrapper<Course> wrapper = new QueryWrapper<>();
-        params.forEach((k, v) -> {
-            if(v != null && !"".equals(v.toString())) {
-                // convert camelCase to snake_case for mybatis plus wrapper
-                String column = k.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase();
-                wrapper.eq(column, v);
-            }
-        });
+        QueryWrapper<Course> wrapper = QueryUtil.buildSafeWrapper(Course.class, params);
         return service.list(wrapper);
     }
 
@@ -59,28 +38,15 @@ public class CourseController {
         return service.saveOrUpdate(entity);
     }
 
+    /**
+     * 删除课程（含级联）。
+     *
+     * <p>级联删除的逻辑已经移到 {@code CourseServiceImpl#removeCourseCascade}，
+     * 那里加了 {@code @Transactional} 保证 5 张表的删除是一个原子操作。
+     * Controller 只负责转发，不再亲自编排多个 Service —— 这样职责更清晰。
+     */
     @DeleteMapping("/{id}")
     public boolean delete(@PathVariable Integer id) {
-        // Cascade delete related records
-        
-        // 1. Delete course_resource
-        courseResourceService.remove(new QueryWrapper<com.online.study.entity.CourseResource>().eq("course_id", id));
-        
-        // 2. Delete course_apply
-        courseApplyService.remove(new QueryWrapper<com.online.study.entity.CourseApply>().eq("course_id", id));
-        
-        // 3. Delete score
-        scoreService.remove(new QueryWrapper<com.online.study.entity.Score>().eq("course_id", id));
-        
-        // 4. Delete homework and homework_submit
-        List<Homework> homeworks = homeworkService.list(new QueryWrapper<Homework>().eq("course_id", id));
-        if (homeworks != null && !homeworks.isEmpty()) {
-            List<Integer> homeworkIds = homeworks.stream().map(Homework::getHomeworkId).collect(Collectors.toList());
-            homeworkSubmitService.remove(new QueryWrapper<com.online.study.entity.HomeworkSubmit>().in("homework_id", homeworkIds));
-            homeworkService.removeByIds(homeworkIds);
-        }
-        
-        // 5. Delete the course itself
-        return service.removeById(id);
+        return service.removeCourseCascade(id);
     }
 }

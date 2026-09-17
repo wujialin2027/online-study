@@ -122,6 +122,7 @@
           <el-upload
             class="upload-demo"
             action="/api/file/upload"
+            :headers="uploadHeaders"
             :on-success="handleUploadSuccess"
             :on-error="handleUploadError"
             :limit="1"
@@ -181,9 +182,18 @@ const newResource = ref({
   resourcePath: ''
 })
 
+/**
+ * el-upload 用的是它内置的 XMLHttpRequest，**不经过** request.js 拦截器，
+ * 所以这里拿到的是后端返回的原始 JSON { code, message, data }，要自己判断。
+ * 同理 headers 必须显式补上 token —— 否则上传请求会被鉴权拦成 401。
+ */
+const uploadHeaders = {
+  Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+}
+
 const handleUploadSuccess = (res) => {
-  if (res.success) {
-    newResource.value.resourcePath = res.url
+  if (res.code === 200 && res.data) {
+    newResource.value.resourcePath = res.data.url
     ElMessage.success('文件上传成功')
   } else {
     ElMessage.error(res.message || '文件上传失败')

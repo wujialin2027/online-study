@@ -46,6 +46,10 @@ const user = ref(JSON.parse(localStorage.getItem('user') || '{}'))
 const role = ref(localStorage.getItem('role') || '')
 
 const logout = () => {
+  // ⚠️ token 必须一起清掉。
+  // 原代码只删了 user / role，token 仍留在 localStorage 里 ——
+  // 相当于「点了退出登录，但凭证还在浏览器里」，任何人拿到这台电脑都能继续用。
+  localStorage.removeItem('token')
   localStorage.removeItem('user')
   localStorage.removeItem('role')
   router.push('/login')

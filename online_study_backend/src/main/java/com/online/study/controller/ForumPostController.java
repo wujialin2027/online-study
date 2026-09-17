@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.online.study.utils.QueryUtil;
 
 @RestController
 @RequestMapping("/forum-post")
@@ -26,13 +27,7 @@ public class ForumPostController {
 
     @PostMapping("/query")
     public List<ForumPost> query(@RequestBody Map<String, Object> params) {
-        QueryWrapper<ForumPost> wrapper = new QueryWrapper<>();
-        params.forEach((k, v) -> {
-            if(v != null && !"".equals(v.toString())) {
-                String column = k.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase();
-                wrapper.eq(column, v);
-            }
-        });
+        QueryWrapper<ForumPost> wrapper = QueryUtil.buildSafeWrapper(ForumPost.class, params);
         return service.list(wrapper);
     }
 

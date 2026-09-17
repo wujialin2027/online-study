@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.online.study.utils.QueryUtil;
 
 @RestController
 @RequestMapping("/student")
@@ -27,13 +28,7 @@ public class StudentController {
 
     @PostMapping("/query")
     public List<Student> query(@RequestBody Map<String, Object> params) {
-        QueryWrapper<Student> wrapper = new QueryWrapper<>();
-        params.forEach((k, v) -> {
-            if(v != null && !"".equals(v.toString())) {
-                String column = k.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase();
-                wrapper.eq(column, v);
-            }
-        });
+        QueryWrapper<Student> wrapper = QueryUtil.buildSafeWrapper(Student.class, params);
         return service.list(wrapper);
     }
 

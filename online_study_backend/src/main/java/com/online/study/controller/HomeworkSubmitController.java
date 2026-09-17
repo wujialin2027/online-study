@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.online.study.utils.QueryUtil;
 
 @RestController
 @RequestMapping("/homework-submit")
@@ -22,13 +23,7 @@ public class HomeworkSubmitController {
 
     @PostMapping("/query")
     public List<HomeworkSubmit> query(@RequestBody Map<String, Object> params) {
-        QueryWrapper<HomeworkSubmit> wrapper = new QueryWrapper<>();
-        params.forEach((k, v) -> {
-            if(v != null && !"".equals(v.toString())) {
-                String column = k.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase();
-                wrapper.eq(column, v);
-            }
-        });
+        QueryWrapper<HomeworkSubmit> wrapper = QueryUtil.buildSafeWrapper(HomeworkSubmit.class, params);
         return service.list(wrapper);
     }
 
