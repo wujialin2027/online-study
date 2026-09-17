@@ -22,13 +22,16 @@ import com.online.study.service.TeacherService;
 import com.online.study.utils.CurrentUserUtil;
 import com.online.study.vo.ChartVO;
 import com.online.study.vo.DashboardVO;
+import com.online.study.vo.ProgressItemVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +64,15 @@ public class DashboardServiceImpl implements DashboardService {
     /** 报名排行取前几名 */
     private static final int TOP_COURSE_LIMIT = 6;
 
+    /**
+     * 图表最多展示多少个类目。
+     *
+     * <p>两个原因：① 类目太多时 X 轴标签会挤成一片（课程名、作业名都是长中文）；
+     * ② 值为 0 的类目（没人报名 / 没有提交）画在图上只是占地方，没有信息量，
+     * 所以下面各处都会把 0 值过滤掉。前端还会根据类目数量自动切成横向柱状图。
+     */
+    private static final int TOP_CHART_ITEMS = 10;
+
     /** 趋势图天数 */
     private static final int TREND_DAYS = 7;
 
@@ -71,6 +83,21 @@ public class DashboardServiceImpl implements DashboardService {
 
     /** 作业批改状态：未批改 */
     private static final int CORRECT_PENDING = 0;
+
+    /** 报名率达到该百分比即视为「即将满」，进度条变色提醒教师加开 */
+    private static final int PROGRESS_WARN_PERCENT = 80;
+
+    /**
+     * 剩余名额不超过该值时同样视为「即将满」。
+     *
+     * <p>为什么不能只看百分比：名额 4 人的小班课只剩 1 个（75%）是该提醒的，
+     * 而名额 50 人的大课剩 13 个（74%）反而一点都不急 —— 百分比对班型不敏感，
+     * 但要处理的问题（快没位置了）本质是「还剩几个」。
+     */
+    private static final int NEARLY_FULL_REMAIN = 2;
+
+    /** 及格线：成绩图的参考线（低于这条线的科目一眼可见） */
+    private static final int PASS_SCORE = 60;
 
     private static final DateTimeFormatter DAY_FORMATTER = DateTimeFormatter.ofPattern("MM-dd");
 
@@ -125,10 +152,11 @@ public class DashboardServiceImpl implements DashboardService {
         long todayApply = courseApplyService.count(new QueryWrapper<CourseApply>()
                 .ge("apply_time", LocalDate.now().atStartOfDay()));
 
-        vo.addCard("学员总数", studentCount, "人", "教师 " + teacherCount + " 人");
-        vo.addCard("课程总数", courseCount, "门", "待审核 " + pendingCourse + " 门");
-        vo.addCard("今日报名", todayApply, "人次", "累计 " + totalApply + " 条");
-        vo.addCard("待办事项", pendingCourse, "项", "课程审核待处理");
+        // 管理员只能进 /admin（/courses 那条路由只开放给学员和教师）
+        vo.addCard("学员总数", studentCount, "人", "教师 " + teacherCount + " 人", "/admin");
+        vo.addCard("课程总数", courseCount, "门", "待审核 " + pendingCourse + " 门", "/admin?tab=course");
+        vo.addCard("今日报名", todayApply, "人次", "累计 " + totalApply + " 条", "/admin?tab=course");
+        vo.addCard("待办事项", pendingCourse, "项", "课程审核待处理", "/admin?tab=course");
 
         // 图 1：课程报名排行 —— 直接读 course.current_students，
         // 这个字段由报名逻辑原子维护，不需要再 join 报名表做聚合
@@ -139,12 +167,20 @@ public class DashboardServiceImpl implements DashboardService {
         List<String> courseNames = new ArrayList<>();
         List<Long> courseApplyCounts = new ArrayList<>();
         for (Course course : topCourses) {
+            long count = course.getCurrentStudents() == null ? 0L : course.getCurrentStudents().longValue();
+            if (count <= 0) {
+                // 没人报名的课程不进图：0 高度的柱子只会把图表挤乱
+                continue;
+            }
             courseNames.add(course.getCourseName());
-            courseApplyCounts.add(course.getCurrentStudents() == null
-                    ? 0L : course.getCurrentStudents().longValue());
+            courseApplyCounts.add(count);
         }
+        // 加一条「上榜平均」参考线：只有柱子的时候，看不出某门课的报名量算高还是算低
+        long avgApply = courseApplyCounts.isEmpty() ? 0L : Math.round(
+                courseApplyCounts.stream().mapToLong(Long::longValue).average().orElse(0));
         vo.addChart(new ChartVO("bar", "课程报名排行")
-                .withSeries("已报名人数", courseApplyCounts, courseNames));
+                .withSeries("已报名人数", courseApplyCounts, courseNames)
+                .withMarkLine(avgApply, "平均 " + avgApply + " 人"));
 
         // 图 2：近 7 天报名趋势
         vo.addChart(buildApplyTrendChart());
@@ -240,40 +276,44 @@ public class DashboardServiceImpl implements DashboardService {
                         .in("course_id", myCourseIds)
                         .eq("audit_status", APPLY_PENDING));
 
-        vo.addCard("我的课程", myCourseIds.size(), "门", "共 " + myCourseIds.size() + " 门在教");
-        vo.addCard("已发布作业", myHomeworkIds.size(), "个", "累计收到 " + totalSubmit + " 份提交");
+        vo.addCard("我的课程", myCourseIds.size(), "门", "共 " + myCourseIds.size() + " 门在教", "/courses");
+        vo.addCard("已发布作业", myHomeworkIds.size(), "个", "累计收到 " + totalSubmit + " 份提交", "/homework");
         vo.addCard("待批改作业", pendingCorrect, "份",
-                pendingCorrect > 0 ? "学生等着看结果" : "暂无待批改");
+                pendingCorrect > 0 ? "学生等着看结果" : "暂无待批改", "/homework");
         vo.addCard("报名待审核", pendingApply, "人",
-                pendingApply > 0 ? "请及时处理" : "暂无待处理");
+                pendingApply > 0 ? "请及时处理" : "暂无待处理", "/courses?tab=apply");
 
-        // 图 1：我的课程报名人数
-        List<String> chartCourseNames = new ArrayList<>();
-        List<Long> chartCourseApplies = new ArrayList<>();
-        if (!myCourseIds.isEmpty()) {
-            List<Course> myCourses = courseService.list(new QueryWrapper<Course>()
-                    .select("course_id", "course_name", "current_students")
-                    .in("course_id", myCourseIds)
-                    .orderByDesc("current_students"));
-            for (Course course : myCourses) {
-                chartCourseNames.add(course.getCourseName());
-                chartCourseApplies.add(course.getCurrentStudents() == null
-                        ? 0L : course.getCurrentStudents().longValue());
-            }
-        }
-        vo.addChart(new ChartVO("bar", "我的课程报名人数")
-                .withSeries("报名人数", chartCourseApplies, chartCourseNames));
+        // 报名进度列表（替代原「我的课程报名人数」柱状图）
+        //
+        // 原图只给出绝对人数：报 3 人算多还是算少，读者无从判断 —— 因为柱状图的
+        // 刻度是相对的（最大值占满全格），3 人看着也"不小"。
+        // 而教师看到报名数据后真正要做的决定是「哪门课该加开 / 哪门课该推广」，
+        // 支撑这个决定的指标是报名率（已报 / 名额上限），刻度绝对，一眼可判。
+        vo.setProgress("我的课程报名进度", buildCourseProgress(myCourseIds));
 
         // 图 2：各作业的提交份数
-        List<String> homeworkNames = new ArrayList<>();
-        List<Long> homeworkSubmitCounts = new ArrayList<>();
+        // 先收集所有作业的提交数，再统一排序、过滤 0、截断。
+        // 原来是直接按作业 id 顺序塞进图表，结果"没人交的作业"（0 值）和有数据的混在一起，
+        // 有数据的柱子被挤得几乎看不见。
+        List<Map.Entry<String, Long>> submitStats = new ArrayList<>();
         if (!myHomeworkIds.isEmpty()) {
             List<Homework> homeworks = homeworkService.listByIds(myHomeworkIds);
             for (Homework homework : homeworks) {
-                homeworkNames.add(homework.getHomeworkName());
-                homeworkSubmitCounts.add(homeworkSubmitService.count(new QueryWrapper<HomeworkSubmit>()
-                        .eq("homework_id", homework.getHomeworkId())));
+                long submitted = homeworkSubmitService.count(new QueryWrapper<HomeworkSubmit>()
+                        .eq("homework_id", homework.getHomeworkId()));
+                submitStats.add(new AbstractMap.SimpleEntry<>(homework.getHomeworkName(), submitted));
             }
+        }
+        submitStats.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+
+        List<String> homeworkNames = new ArrayList<>();
+        List<Long> homeworkSubmitCounts = new ArrayList<>();
+        for (Map.Entry<String, Long> entry : submitStats) {
+            if (entry.getValue() <= 0 || homeworkNames.size() >= TOP_CHART_ITEMS) {
+                continue;
+            }
+            homeworkNames.add(entry.getKey());
+            homeworkSubmitCounts.add(entry.getValue());
         }
         vo.addChart(new ChartVO("bar", "各作业提交份数")
                 .withSeries("提交数", homeworkSubmitCounts, homeworkNames));
@@ -290,6 +330,62 @@ public class DashboardServiceImpl implements DashboardService {
         }
 
         return vo;
+    }
+
+    /**
+     * 组装「我的课程报名进度」列表。
+     *
+     * <p>排序规则：报名率高的排前面（要加开的先被看到）；「不限名额」的排最后
+     * —— 不愁报满的课不是需要处理的事项。
+     *
+     * <p>⚠️ {@code max_students = 0} 的业务含义是「不限名额」（报名时用
+     * {@code max_students = 0 OR current_students < max_students} 判断），
+     * 所以绝不能拿它当除数算百分比 —— 这是这个字段最容易踩的坑。
+     */
+    private List<ProgressItemVO> buildCourseProgress(List<Integer> courseIds) {
+        List<ProgressItemVO> items = new ArrayList<>();
+        if (courseIds.isEmpty()) {
+            return items;
+        }
+
+        List<Course> courses = courseService.list(new QueryWrapper<Course>()
+                .select("course_id", "course_name", "current_students", "max_students")
+                .in("course_id", courseIds));
+
+        for (Course course : courses) {
+            long current = course.getCurrentStudents() == null ? 0L : course.getCurrentStudents().longValue();
+            long max = course.getMaxStudents() == null ? 0L : course.getMaxStudents().longValue();
+
+            if (max <= 0) {
+                // 不限名额：条填满但由前端用灰色表示「开放」，避免被误读成「已满」
+                items.add(new ProgressItemVO(course.getCourseName(), current, 0L, 100,
+                        "unlimited", "不限名额 · 已报 " + current + " 人"));
+                continue;
+            }
+
+            int percent = (int) Math.min(100L, current * 100L / max);
+            long remain = max - current;
+            String status;
+            String tip;
+            if (remain <= 0) {
+                status = "full";
+                tip = "已满 " + current + "/" + max + "，建议加开";
+            } else if (percent >= PROGRESS_WARN_PERCENT || remain <= NEARLY_FULL_REMAIN) {
+                status = "warning";
+                tip = current + "/" + max + "，仅剩 " + remain + " 个名额";
+            } else {
+                status = "normal";
+                tip = current + "/" + max + "，剩 " + remain + " 个名额";
+            }
+            items.add(new ProgressItemVO(course.getCourseName(), current, max, percent, status, tip));
+        }
+
+        // 排序键：不限名额的记 -1（永远排最后），其余用报名率
+        items.sort(Comparator
+                .comparingInt((ProgressItemVO item) -> "unlimited".equals(item.getStatus())
+                        ? -1 : item.getPercent())
+                .reversed());
+        return items;
     }
 
     // ========================================================================
@@ -357,29 +453,45 @@ public class DashboardServiceImpl implements DashboardService {
         }
 
         vo.addCard("我的课程", passedCount, "门",
-                pendingCount > 0 ? "另有 " + pendingCount + " 门待审核" : "全部审核完成");
+                pendingCount > 0 ? "另有 " + pendingCount + " 门待审核" : "全部审核完成", "/courses?tab=enrolled");
         vo.addCard("待完成作业", todoHomework, "个",
-                "已提交 " + submittedCount + " / " + totalHomework + " 份");
+                "已提交 " + submittedCount + " / " + totalHomework + " 份", "/homework");
         vo.addCard("我的平均成绩", avgScoreText, "分",
-                myScores.isEmpty() ? "暂未出成绩" : "共 " + myScores.size() + " 门课程");
+                myScores.isEmpty() ? "暂未出成绩" : "共 " + myScores.size() + " 门课程", "/homework?tab=score");
         vo.addCard("报名被驳回", rejectedCount, "门",
-                rejectedCount > 0 ? "可查看审核意见" : "无");
+                rejectedCount > 0 ? "可查看审核意见" : "无", "/courses?tab=enrolled");
 
-        // 图 1：我的成绩（按课程）
+        // 图 1：我的各科成绩（按分数从高到低）
+        // ① 过滤还没出成绩的记录 —— 把 null 当成 0 分会让人误以为"考了 0 分"；
+        // ② 降序排列，最弱的科目落在末尾，一眼可见；
+        // ③ 画一条及格线作参照系 —— 只有柱子的时候，没人知道"76 分"算好还是算差。
         List<String> scoreCourseNames = new ArrayList<>();
         List<Long> scoreValues = new ArrayList<>();
-        if (!myScores.isEmpty()) {
-            List<Integer> scoreCourseIds = myScores.stream()
+        List<Score> allValidScores = myScores.stream()
+                .filter(score -> score.getTotalScore() != null)
+                .sorted(Comparator.comparingInt(Score::getTotalScore).reversed())
+                .collect(Collectors.toList());
+        List<Score> validScores = allValidScores.stream()
+                .limit(TOP_CHART_ITEMS)
+                .collect(Collectors.toList());
+        if (!validScores.isEmpty()) {
+            List<Integer> scoreCourseIds = validScores.stream()
                     .map(Score::getCourseId).collect(Collectors.toList());
             Map<Integer, String> courseNameMap = courseService.listByIds(scoreCourseIds).stream()
                     .collect(Collectors.toMap(Course::getCourseId, Course::getCourseName, (a, b) -> a));
-            for (Score score : myScores) {
+            for (Score score : validScores) {
                 scoreCourseNames.add(courseNameMap.getOrDefault(score.getCourseId(), "未知课程"));
-                scoreValues.add(score.getTotalScore() == null ? 0L : score.getTotalScore().longValue());
+                scoreValues.add(score.getTotalScore().longValue());
             }
         }
-        vo.addChart(new ChartVO("bar", "我的各科成绩")
-                .withSeries("总评成绩", scoreValues, scoreCourseNames));
+        // 标题里写清总数：图表最多画 10 条柱子，若不说明，
+        // 选了十几门课的学员会以为"我只有 10 门成绩"，其实是被截断了
+        String scoreChartTitle = allValidScores.size() > TOP_CHART_ITEMS
+                ? "我的各科成绩（显示前 " + TOP_CHART_ITEMS + " 门 / 共 " + allValidScores.size() + " 门）"
+                : "我的各科成绩（共 " + allValidScores.size() + " 门）";
+        vo.addChart(new ChartVO("bar", scoreChartTitle)
+                .withSeries("总评成绩", scoreValues, scoreCourseNames)
+                .withMarkLine((long) PASS_SCORE, "及格线 " + PASS_SCORE));
 
         // 图 2：我的报名状态分布
         vo.addChart(new ChartVO("pie", "我的报名状态")

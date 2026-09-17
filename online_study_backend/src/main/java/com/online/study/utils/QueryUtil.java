@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -56,6 +57,40 @@ public final class QueryUtil {
     }
 
     /**
+     * 模糊查询后缀。
+     *
+     * <p>约定：条件名以 {@code Like} 结尾表示模糊匹配。
+     * <pre>
+     *   {"courseName": "Java基础教程"}      →  course_name = 'Java基础教程'
+     *   {"courseNameLike": "Java"}          →  course_name LIKE '%Java%'
+     * </pre>
+     * 这样前端做"搜索框"不用改接口，也不需要后端为每个字段单独写查询方法。
+     *
+     * <p>注意驼峰转下划线后 {@code courseNameLike} 会变成 {@code course_name_like}，
+     * 所以判断的是下划线形式的后缀。
+     */
+    private static final String LIKE_SUFFIX = "_like";
+
+    /**
+     * 集合查询后缀。
+     *
+     * <p>约定：条件名以 {@code In} 结尾表示"在这个集合里"，值必须是数组。
+     * <pre>
+     *   {"courseIdIn": [1, 2, 3]}   →  course_id IN (1, 2, 3)
+     * </pre>
+     * 典型场景：学员端查"我已报名课程下的作业" —— 前端先拿到自己的课程 ID 列表，
+     * 再把它作为条件传给作业分页接口，避免"拉全表在前端过滤"。
+     *
+     * <p>注意两点：
+     * <ul>
+     *   <li><b>空集合必须跳过</b>：SQL 里 {@code IN ()} 是语法错误，
+     *       所以值为空数组时直接不加这个条件（由调用方保证"无课程则不给条件/不查"）。</li>
+     *   <li>值必须是集合类型，非集合时忽略该条件，避免拼出错误的 SQL。</li>
+     * </ul>
+     */
+    private static final String IN_SUFFIX = "_in";
+
+    /**
      * 把前端传来的查询条件安全地转换为 QueryWrapper。
      *
      * @param entityClass 实体类型，用于推导合法列名白名单
@@ -77,13 +112,42 @@ public final class QueryUtil {
             if (PAGINATION_KEYS.contains(key)) {
                 return;
             }
+
             String column = camelToUnderline(key);
+
+            // 识别后缀：XxxLike → 模糊匹配；XxxIn → 集合匹配
+            boolean fuzzy = column.endsWith(LIKE_SUFFIX);
+            if (fuzzy) {
+                column = column.substring(0, column.length() - LIKE_SUFFIX.length());
+            }
+            boolean inQuery = column.endsWith(IN_SUFFIX);
+            if (inQuery) {
+                column = column.substring(0, column.length() - IN_SUFFIX.length());
+            }
+
             if (!allowedColumns.contains(column)) {
                 // 不在白名单：可能是前端拼错字段，也可能是恶意构造，统一忽略
                 log.warn("查询条件中存在非法字段，已忽略：{}（实体：{}）", key, entityClass.getSimpleName());
                 return;
             }
-            wrapper.eq(column, value);
+
+            if (fuzzy) {
+                // like 与 eq 一样是参数化查询，值不会被拼进 SQL，不存在注入风险
+                wrapper.like(column, value);
+            } else if (inQuery) {
+                if (value instanceof Collection<?> collection) {
+                    if (collection.isEmpty()) {
+                        // SQL 里 IN () 是语法错误，空集合直接不加条件
+                        return;
+                    }
+                    wrapper.in(column, collection);
+                } else {
+                    log.warn("查询条件 {} 期望数组，实际类型为 {}，已忽略",
+                            key, value.getClass().getSimpleName());
+                }
+            } else {
+                wrapper.eq(column, value);
+            }
         });
         return wrapper;
     }

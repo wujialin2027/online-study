@@ -131,11 +131,11 @@
             background
             layout="total, sizes, prev, pager, next"
             :total="logTotal"
-            :page-sizes="[10, 20, 50]"
+            :page-sizes="[5, 10, 20, 50]"
             v-model:current-page="logQuery.pageNum"
             v-model:page-size="logQuery.pageSize"
             @current-change="fetchLogs"
-            @size-change="fetchLogs"
+            @size-change="searchLogs"
           />
         </div>
 
@@ -176,12 +176,26 @@
 
 <script setup>
 import { onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const ROLE_TEXT = { admin: '管理员', teacher: '教师', student: '学员' }
 
 const activeTab = ref('student')
+
+const route = useRoute()
+
+/**
+ * 支持从首页卡片带着 ?tab=course 直接落到「课程审核」页签。
+ * 只接受白名单内的值，避免 URL 上的随意字符串把页面切到不存在的页签。
+ */
+const applyQueryTab = () => {
+  const tab = route.query.tab
+  if (typeof tab === 'string' && ['student', 'teacher', 'course', 'log'].includes(tab)) {
+    activeTab.value = tab
+  }
+}
 const students = ref([])
 const teachers = ref([])
 const courses = ref([])
@@ -384,6 +398,8 @@ watch(activeTab, (tab) => {
 })
 
 onMounted(() => {
+  // 先按 URL 参数定位页签，再拉数据（从首页点卡片过来能直接落在对应页签上）
+  applyQueryTab()
   fetchUsers()
   fetchCourses()
 })

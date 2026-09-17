@@ -1,9 +1,24 @@
 <template>
   <div>
-    <h2>课程资源</h2>
+    <div class="page-head">
+      <h2>课程资源</h2>
+      <p class="subtitle">选课报名 · 课件下载 · 课程管理</p>
+    </div>
     <el-tabs v-model="activeTab">
       <el-tab-pane label="所有课程" name="all" v-if="role === 'student'">
-        <el-table :data="courses" style="width: 100%">
+        <div class="filter-bar">
+          <el-input
+            v-model="courseQuery.courseName"
+            placeholder="按课程名称搜索"
+            clearable
+            style="width: 220px"
+            @keyup.enter="searchCourses"
+            @clear="searchCourses"
+          />
+          <el-button type="primary" @click="searchCourses">搜索</el-button>
+          <el-button @click="resetCourseSearch">重置</el-button>
+        </div>
+        <el-table :data="courses" v-loading="courseLoading" style="width: 100%">
           <el-table-column prop="courseName" label="课程名称"></el-table-column>
           <el-table-column prop="trainCycle" label="培训周期"></el-table-column>
           <el-table-column prop="publishTime" label="发布时间">
@@ -15,6 +30,18 @@
             </template>
           </el-table-column>
         </el-table>
+        <div class="pagination-bar">
+          <el-pagination
+            background
+            layout="total, sizes, prev, pager, next"
+            :total="courseTotal"
+            :page-sizes="[5, 10, 20, 50]"
+            v-model:current-page="courseQuery.pageNum"
+            v-model:page-size="courseQuery.pageSize"
+            @current-change="fetchCourses"
+            @size-change="searchCourses"
+          />
+        </div>
       </el-tab-pane>
 
       <el-tab-pane label="我已报名的课程" name="enrolled" v-if="role === 'student'">
@@ -45,7 +72,26 @@
       </el-tab-pane>
 
       <el-tab-pane label="我发布的课程" name="my" v-if="role === 'teacher'">
-        <el-table :data="courses" style="width: 100%">
+        <div class="filter-bar">
+          <el-input
+            v-model="courseQuery.courseName"
+            placeholder="按课程名称搜索"
+            clearable
+            style="width: 220px"
+            @keyup.enter="searchCourses"
+            @clear="searchCourses"
+          />
+          <el-select v-model="courseQuery.auditStatus" placeholder="全部状态" clearable style="width: 130px">
+            <el-option label="待审核" :value="0" />
+            <el-option label="已通过" :value="1" />
+            <el-option label="已驳回" :value="2" />
+          </el-select>
+          <el-button type="primary" @click="searchCourses">搜索</el-button>
+          <el-button @click="resetCourseSearch">重置</el-button>
+          <div class="spacer"></div>
+          <el-button type="success" @click="showAddDialog = true">发布新课程</el-button>
+        </div>
+        <el-table :data="courses" v-loading="courseLoading" style="width: 100%">
           <el-table-column prop="courseName" label="课程名称"></el-table-column>
           <el-table-column prop="trainCycle" label="培训周期"></el-table-column>
           <el-table-column prop="auditStatus" label="状态">
@@ -67,7 +113,18 @@
             </template>
           </el-table-column>
         </el-table>
-        <el-button type="success" style="margin-top: 20px" @click="showAddDialog = true">发布新课程</el-button>
+        <div class="pagination-bar">
+          <el-pagination
+            background
+            layout="total, sizes, prev, pager, next"
+            :total="courseTotal"
+            :page-sizes="[5, 10, 20, 50]"
+            v-model:current-page="courseQuery.pageNum"
+            v-model:page-size="courseQuery.pageSize"
+            @current-change="fetchCourses"
+            @size-change="searchCourses"
+          />
+        </div>
       </el-tab-pane>
       <el-tab-pane label="报名审核" name="apply" v-if="role === 'teacher'">
         <el-table :data="applies" style="width: 100%">
@@ -168,17 +225,42 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, reactive } from 'vue'
+import { useRoute } from 'vue-router'
 import request from '../utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const courses = ref([])
+const courseTotal = ref(0)
+const courseLoading = ref(false)
+/** 课程列表的分页与搜索条件（服务端分页，见 fetchCourses） */
+const courseQuery = reactive({ pageNum: 1, pageSize: 10, courseName: '', auditStatus: null })
 const enrolledCourses = ref([])
 const applies = ref([])
 const resources = ref([])
 const role = ref(localStorage.getItem('role'))
 const user = ref(JSON.parse(localStorage.getItem('user') || '{}'))
 const activeTab = ref(role.value === 'teacher' ? 'my' : 'all')
+
+const route = useRoute()
+
+/** 本页允许的页签名（用于校验 URL 上的 ?tab= 参数） */
+const TAB_NAMES = ['all', 'enrolled', 'my', 'apply']
+
+/**
+ * 支持从首页数字卡片带着 ?tab=xxx 直接定位到指定页签，例如：
+ *   /courses?tab=enrolled  学员「我已报名的课程」
+ *   /courses?tab=apply     教师「报名审核」
+ *
+ * 只接受白名单内的值 —— URL 是用户随手就能改的，
+ * 不能让它把页面切到一个不存在的页签上。
+ */
+const applyQueryTab = () => {
+  const tab = route.query.tab
+  if (typeof tab === 'string' && TAB_NAMES.includes(tab)) {
+    activeTab.value = tab
+  }
+}
 
 const showAddDialog = ref(false)
 const showResourceDialog = ref(false)
@@ -226,17 +308,50 @@ const formatDate = (dateStr) => {
 }
 
 const fetchCourses = async () => {
+  courseLoading.value = true
   try {
+    const params = { pageNum: courseQuery.pageNum, pageSize: courseQuery.pageSize }
+    // 搜索用 courseNameLike：QueryUtil 约定「条件名以 Like 结尾」即模糊匹配
+    if (courseQuery.courseName) params.courseNameLike = courseQuery.courseName.trim()
+
     if (role.value === 'teacher') {
-      const res = await request.post('/course/query', { publishTeacherId: user.value.teacherId })
-      courses.value = res
-    } else if (role.value === 'student') {
-      const res = await request.post('/course/query', { auditStatus: 1 })
-      courses.value = res
+      params.publishTeacherId = user.value.teacherId
+      if (courseQuery.auditStatus !== null && courseQuery.auditStatus !== '') {
+        params.auditStatus = courseQuery.auditStatus
+      }
+    } else {
+      // 学员只能看到审核通过的课程
+      params.auditStatus = 1
     }
+
+    const res = await request.post('/course/page', params)
+    courses.value = res?.records || []
+    courseTotal.value = res?.total || 0
   } catch (e) {
     console.error(e)
+  } finally {
+    courseLoading.value = false
   }
+}
+
+/** 条件变化后从第一页重新查 */
+const searchCourses = () => {
+  courseQuery.pageNum = 1
+  fetchCourses()
+}
+
+/**
+ * 注意：分页器的 @size-change 也接到 searchCourses（而不是直接 fetchCourses）。
+ * 因为改了每页条数后总页数会变，如果还停在原来的页码上就会请求到空数据：
+ * 例如原本在第 5 页（每页 5 条），改成每页 50 条后总页数只剩 1 页，
+ * 却仍请求第 5 页 → 表格显示"暂无数据"，用户会以为数据丢了。
+ */
+
+const resetCourseSearch = () => {
+  courseQuery.courseName = ''
+  courseQuery.auditStatus = null
+  courseQuery.pageNum = 1
+  fetchCourses()
 }
 
 const fetchEnrolledCourses = async () => {
@@ -464,6 +579,8 @@ const viewStudents = async (course) => {
 }
 
 onMounted(() => {
+  // 先按 URL 参数定位页签，再拉数据（这样从首页点卡片过来能直接落在对应页签上）
+  applyQueryTab()
   fetchCourses()
   if (role.value === 'teacher') {
     fetchApplies()

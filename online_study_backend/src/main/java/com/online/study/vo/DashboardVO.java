@@ -37,6 +37,18 @@ public class DashboardVO {
     /** 图表 */
     private List<ChartVO> charts = new ArrayList<>();
 
+    /** 进度列表标题，如「我的课程报名进度」。为空表示该角色不需要这一块 */
+    private String progressTitle;
+
+    /**
+     * 进度列表（一行 = 一门课程）。
+     *
+     * <p>用来表达「比率 / 状态」这类指标 —— 这不是图表能表达好的东西：
+     * 柱状图的刻度是相对的，看不出「3 人报名」是多是少；
+     * 进度条的刻度是绝对的（满格 = 名额上限），一眼就能判断。
+     */
+    private List<ProgressItemVO> progressList = new ArrayList<>();
+
     public DashboardVO(String role, String title, String subtitle) {
         this.role = role;
         this.title = title;
@@ -44,12 +56,30 @@ public class DashboardVO {
     }
 
     public DashboardVO addCard(String label, Object value, String unit, String tip) {
-        this.cards.add(new StatCardVO(label, String.valueOf(value), unit, tip));
+        return addCard(label, value, unit, tip, null);
+    }
+
+    /**
+     * 带跳转的卡片 —— 点一下就能到对应的列表页。
+     *
+     * @param link 前端路由，如 {@code "/homework?tab=score"}；传 null 表示卡片不可点击。
+     *             ⚠️ 必须给**当前角色有权限访问**的路径，否则会被前端路由守卫拦回首页
+     *             （例如管理员不能被指到 /courses，那条路由只开放给学员和教师）。
+     */
+    public DashboardVO addCard(String label, Object value, String unit, String tip, String link) {
+        this.cards.add(new StatCardVO(label, String.valueOf(value), unit, tip, link));
         return this;
     }
 
     public DashboardVO addChart(ChartVO chart) {
         this.charts.add(chart);
+        return this;
+    }
+
+    /** 设置进度列表整块内容 */
+    public DashboardVO setProgress(String title, List<ProgressItemVO> items) {
+        this.progressTitle = title;
+        this.progressList = items;
         return this;
     }
 }

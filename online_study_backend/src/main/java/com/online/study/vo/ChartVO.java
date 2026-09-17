@@ -34,6 +34,19 @@ public class ChartVO {
     /** 数据系列 */
     private List<SeriesVO> series = new ArrayList<>();
 
+    /**
+     * 参考线数值（可选）。为 null 表示不画参考线。
+     *
+     * <p>为什么需要它：只有柱子时读者无法判断「这个值算高还是算低」——
+     * 「报名 3 人」是好是坏？答案取决于参照系。
+     * 画一条参考线（平均分 / 及格线 / 平均报名数）就补上了这个参照系，
+     * 这是把「图表」变成「结论」最省力的一步。
+     */
+    private Long markLineValue;
+
+    /** 参考线文字，如「及格线 60」「平均 12 人」 */
+    private String markLineLabel;
+
     public ChartVO() {
     }
 
@@ -46,6 +59,13 @@ public class ChartVO {
     public ChartVO withSeries(String name, List<Long> data, List<String> categories) {
         this.categories = categories;
         this.series.add(new SeriesVO(name, data));
+        return this;
+    }
+
+    /** 追加一条水平/垂直参考线（纵向柱状用 yAxis，横向柱状用 xAxis，前端自动判断） */
+    public ChartVO withMarkLine(Long value, String label) {
+        this.markLineValue = value;
+        this.markLineLabel = label;
         return this;
     }
 }
