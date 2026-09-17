@@ -150,6 +150,20 @@ CREATE TABLE IF NOT EXISTS forum_reply (
     CONSTRAINT fk_reply_post FOREIGN KEY (post_id) REFERENCES forum_post(post_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='论坛回复表';
 
+-- 表2.12 论坛互动记录表（forum_interaction）
+-- 记录「谁 对 哪个帖子 做过 哪类互动」，点赞/收藏的计数以它为准。
+-- 唯一索引 uk_post_user_type 保证同一用户对同一帖子只能点一次赞（防重复刷）。
+CREATE TABLE IF NOT EXISTS forum_interaction (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '互动记录ID',
+    post_id INT NOT NULL COMMENT '帖子ID',
+    user_role VARCHAR(10) NOT NULL COMMENT '互动者角色（student/teacher/admin）',
+    user_id INT NOT NULL COMMENT '互动者ID（对应各角色表主键）',
+    type VARCHAR(10) NOT NULL COMMENT '互动类型（like-点赞 / collect-收藏）',
+    create_time DATETIME NOT NULL COMMENT '互动时间',
+    UNIQUE KEY uk_post_user_type (post_id, user_role, user_id, type),
+    KEY idx_post_type (post_id, type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='论坛互动记录表（点赞/收藏）';
+
 -- 初始化超级管理员
 INSERT INTO admin (admin_account, admin_pwd, admin_name, admin_phone, role_level) 
 VALUES ('admin', '$2a$10$Mamia1SxQ4A7EwtmexR94.VjRTH5049bQV5oX3h5A1Oi0tldl3/LO', '超级管理员', '13800138000', 1);

@@ -128,6 +128,8 @@ const menuItems = computed(() => {
   return (layout?.children || [])
     .filter((child) => {
       if (!child.meta?.title) return false
+      // 详情页这类「只能从别的页面跳进去」的路由不进菜单
+      if (child.meta?.hideInMenu) return false
       const roles = child.meta?.roles
       return !roles || roles.includes(role.value)
     })

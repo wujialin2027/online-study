@@ -46,6 +46,14 @@ const routes = [
         meta: { title: '交流论坛' }
       },
       {
+        // 帖子详情：hideInMenu 让侧边栏菜单跳过它（菜单是从路由表生成的，
+        // 不加这个标记的话会多出一项「帖子详情」，而且点进去还没有 id 可传）
+        path: 'forum/:id',
+        name: 'ForumDetail',
+        component: () => import('../views/ForumDetail.vue'),
+        meta: { title: '帖子详情', hideInMenu: true }
+      },
+      {
         path: 'admin',
         name: 'Admin',
         component: () => import('../views/Admin.vue'),
