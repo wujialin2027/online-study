@@ -52,6 +52,10 @@
               </el-form-item>
 
               <el-form-item>
+                <el-checkbox v-model="remember">记住我（下次打开浏览器免登录）</el-checkbox>
+              </el-form-item>
+
+              <el-form-item>
                 <el-button
                   type="primary"
                   size="large"
@@ -111,6 +115,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ChatDotRound, Document, Lock, Notebook, User, UserFilled } from '@element-plus/icons-vue'
 import request from '../utils/request'
+import { setAuth } from '../utils/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -118,6 +123,8 @@ const route = useRoute()
 const activeTab = ref('login')
 const loading = ref(false)
 const regLoading = ref(false)
+/** 是否「记住我」：勾选存 localStorage，不勾只存当前标签页（关浏览器即失效） */
+const remember = ref(false)
 
 const loginFormRef = ref()
 const regFormRef = ref()
@@ -179,10 +186,9 @@ const handleLogin = async () => {
       account: form.value.account.trim(),
       password: form.value.password
     })
-    localStorage.setItem('token', data.token)
-    localStorage.setItem('user', JSON.stringify(data.user))
-    localStorage.setItem('role', data.role)
-    ElMessage.success('登录成功')
+    // 按「记住我」决定存 localStorage（长期）还是 sessionStorage（关标签即失效）
+    setAuth({ token: data.token, user: data.user, role: data.role }, remember.value)
+    ElMessage.success(remember.value ? '登录成功，下次打开浏览器将自动登录' : '登录成功')
     router.push(resolveRedirect())
   } catch (error) {
     // 失败提示已由 request.js 统一处理（账号密码错误、账号被禁用等）

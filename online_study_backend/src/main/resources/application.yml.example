@@ -26,9 +26,12 @@ jwt:
   secret: ${JWT_SECRET:}
   expiration: 86400000
 
-# AI 能力配置（智能助教模块，后续阶段使用）
+# AI 能力配置（智能助教模块，阶段⑤ 使用）
+# 默认走阿里云百炼：一个 Key 同时提供「对话」与「向量化」两种能力
+# 若想用 DeepSeek 官方对话模型，把 base-url 改为 https://api.deepseek.com、chat-model 改为 deepseek-chat，
+# 但向量化仍需另配一家（DeepSeek 官方没有 embedding 接口）
 ai:
   api-key: ${AI_API_KEY:}
-  base-url: ${AI_BASE_URL:https://api.deepseek.com}
-  chat-model: ${AI_CHAT_MODEL:deepseek-chat}
-  embedding-model: ${AI_EMBEDDING_MODEL:text-embedding-v3}
+  base-url: ${AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+  chat-model: ${AI_CHAT_MODEL:qwen-plus}
+  embedding-model: ${AI_EMBEDDING_MODEL:text-embedding-v4}

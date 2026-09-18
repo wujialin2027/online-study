@@ -33,7 +33,8 @@
         <div class="pagination-bar">
           <el-pagination
             background
-            layout="total, sizes, prev, pager, next"
+            layout="total, prev, pager, next, sizes"
+            :pager-count="5"
             :total="courseTotal"
             :page-sizes="[5, 10, 20, 50]"
             v-model:current-page="courseQuery.pageNum"
@@ -116,7 +117,8 @@
         <div class="pagination-bar">
           <el-pagination
             background
-            layout="total, sizes, prev, pager, next"
+            layout="total, prev, pager, next, sizes"
+            :pager-count="5"
             :total="courseTotal"
             :page-sizes="[5, 10, 20, 50]"
             v-model:current-page="courseQuery.pageNum"
@@ -127,20 +129,70 @@
         </div>
       </el-tab-pane>
       <el-tab-pane label="报名审核" name="apply" v-if="role === 'teacher'">
-        <el-table :data="applies" style="width: 100%">
-          <el-table-column prop="courseName" label="课程名称"></el-table-column>
-          <el-table-column prop="studentName" label="学员姓名"></el-table-column>
-          <el-table-column prop="applyTime" label="申请时间">
+        <!-- 待办优先：统计卡把"还要处理多少"提到最前，点一下即筛选，默认停在待审核。
+             第一张「全部」卡是退出筛选的显式出口 —— 靠"再点一次同一张卡"来取消筛选太隐蔽，
+             用户根本发现不了。 -->
+        <div class="stat-cards">
+          <div
+            v-for="item in applyStats"
+            :key="item.label"
+            class="stat-card"
+            :class="{ 'is-active': applyQuery.status === item.status }"
+            :style="{ '--stat-color': item.color }"
+            @click="pickApplyStatus(item.status)"
+          >
+            <div class="stat-card-label">{{ item.label }}</div>
+            <div class="stat-card-value">{{ item.count }}</div>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <el-select
+            v-model="applyQuery.courseId"
+            placeholder="全部课程"
+            clearable
+            style="width: 200px"
+            @change="searchApplies"
+          >
+            <el-option
+              v-for="course in myCourses"
+              :key="course.courseId"
+              :label="course.courseName"
+              :value="course.courseId"
+            />
+          </el-select>
+          <el-input
+            v-model="applyQuery.studentName"
+            placeholder="按学员姓名搜索"
+            clearable
+            style="width: 200px"
+            @keyup.enter="searchApplies"
+            @clear="searchApplies"
+          />
+          <el-button type="primary" @click="searchApplies">搜索</el-button>
+          <el-button @click="resetApplySearch">重置</el-button>
+          <div class="spacer"></div>
+          <span class="apply-tip">当前条件下 {{ filteredApplies.length }} 条</span>
+        </div>
+
+        <!-- max-height 让表头固定：学生多的时候不必滚回顶部才知道哪列是什么 -->
+        <el-table :data="pagedApplies" style="width: 100%" max-height="520" empty-text="当前筛选条件下没有报名记录">
+          <el-table-column prop="courseName" label="课程名称" min-width="160"></el-table-column>
+          <el-table-column prop="studentName" label="学员姓名" min-width="110"></el-table-column>
+          <el-table-column prop="applyTime" label="申请时间" min-width="170">
             <template #default="scope">{{ formatDate(scope.row.applyTime) }}</template>
           </el-table-column>
-          <el-table-column prop="auditStatus" label="状态">
+          <el-table-column prop="auditStatus" label="状态" width="100">
             <template #default="scope">
               <el-tag :type="scope.row.auditStatus === 1 ? 'success' : (scope.row.auditStatus === 2 ? 'danger' : 'info')">
                 {{ scope.row.auditStatus === 1 ? '已通过' : (scope.row.auditStatus === 2 ? '已驳回' : '待审核') }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作">
+          <el-table-column prop="auditRemark" label="审核意见" min-width="140" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.auditRemark || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="190" fixed="right">
             <template #default="scope">
               <el-button size="small" type="success" v-if="scope.row.auditStatus === 0" @click="auditApply(scope.row, 1)">通过</el-button>
               <el-button size="small" type="danger" v-if="scope.row.auditStatus === 0" @click="auditApply(scope.row, 2)">驳回</el-button>
@@ -148,6 +200,18 @@
             </template>
           </el-table-column>
         </el-table>
+
+        <div class="pagination-bar" v-if="filteredApplies.length > 0">
+          <el-pagination
+            background
+            layout="total, prev, pager, next, sizes"
+            :pager-count="5"
+            :total="filteredApplies.length"
+            :page-sizes="[5, 10, 20, 50]"
+            v-model:current-page="applyQuery.pageNum"
+            v-model:page-size="applyQuery.pageSize"
+          />
+        </div>
       </el-tab-pane>
     </el-tabs>
 
@@ -163,17 +227,138 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showResourceDialog" title="课程资源" width="60%">
-      <el-button type="primary" v-if="role === 'teacher'" @click="showAddResourceDialog = true" style="margin-bottom: 10px;">上传资源</el-button>
-      <el-table :data="resources" style="width: 100%">
-        <el-table-column prop="resourceName" label="资源名称"></el-table-column>
-        <el-table-column prop="resourceType" label="类型"></el-table-column>
-        <el-table-column prop="uploadTime" label="上传时间">
+    <!-- 资源弹窗：加宽到 960px，上方是预览区、下方是资源列表。
+         原来 780px 里只塞了"元数据 + 下载按钮"，没有真正的预览，所以显得又小又空。 -->
+    <el-dialog v-model="showResourceDialog" :title="resourceDialogTitle" width="960px" class="res-dialog">
+      <!-- ==================== 预览区（选中某个资源后才出现） ==================== -->
+      <div v-if="previewRes" class="res-preview">
+        <div class="res-preview-head">
+          <span class="res-preview-title">{{ previewRes.resourceName }}</span>
+          <el-tag size="small" effect="plain" :type="resourceTypeTag(previewRes.resourceType)">
+            {{ previewRes.resourceType || '其他' }}
+          </el-tag>
+          <div class="spacer"></div>
+          <el-button size="small" @click="closePreview">收起预览</el-button>
+        </div>
+
+        <div v-loading="previewLoading" class="res-preview-body">
+          <!-- 外链不能内嵌（对方站点通常禁止被 iframe 嵌套），只给一个跳转入口 -->
+          <div v-if="isExternalPath(previewRes.resourcePath)" class="res-preview-tip">
+            这是外部链接，无法在页面内预览
+            <el-button size="small" type="primary" @click="openExternal(previewRes)">
+              在新标签页打开
+            </el-button>
+          </div>
+
+          <!-- PDF / 图片都交给浏览器内嵌渲染 -->
+          <iframe
+            v-else-if="previewUrl && (previewKind === 'pdf' || previewKind === 'image')"
+            class="res-preview-frame"
+            :src="previewUrl"
+            title="资源预览"
+          ></iframe>
+
+          <video
+            v-else-if="previewUrl && previewKind === 'video'"
+            class="res-preview-video"
+            :src="previewUrl"
+            controls
+          ></video>
+
+          <div v-else-if="previewKind === 'other'" class="res-preview-tip">
+            该格式不支持在线预览，请下载后查看
+          </div>
+        </div>
+
+        <div class="res-preview-foot">
+          <el-button
+            v-if="!isExternalPath(previewRes.resourcePath)"
+            type="primary"
+            @click="downloadResource(previewRes)"
+          >
+            下载
+          </el-button>
+          <!-- 「另存为」用 File System Access API 弹出系统保存对话框，
+               只有 Chromium 系浏览器支持，不支持时整个按钮不出现 -->
+          <el-button
+            v-if="canPickSavePath && !isExternalPath(previewRes.resourcePath)"
+            @click="downloadResourceAs(previewRes)"
+          >
+            另存为…
+          </el-button>
+          <span v-if="!canPickSavePath && !isExternalPath(previewRes.resourcePath)" class="res-hint">
+            当前浏览器不支持自选保存位置，可在浏览器设置里开启「下载前询问保存位置」
+          </span>
+        </div>
+      </div>
+
+      <div class="res-toolbar">
+        <span class="res-count">共 {{ resources.length }} 个资源</span>
+        <el-button type="primary" v-if="role === 'teacher'" @click="showAddResourceDialog = true">
+          上传资源
+        </el-button>
+      </div>
+      <el-table :data="resources" style="width: 100%" empty-text="这门课程还没有上传课件">
+        <el-table-column prop="resourceName" label="资源名称" min-width="200"></el-table-column>
+        <el-table-column label="类型" width="90">
+          <template #default="scope">
+            <el-tag size="small" effect="plain" :type="resourceTypeTag(scope.row.resourceType)">
+              {{ scope.row.resourceType || '其他' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <!-- 来源列：本站文件和外部链接的处理方式完全不同，先说清楚再给按钮 -->
+        <el-table-column label="来源" width="105">
+          <template #default="scope">
+            <el-tag
+              size="small"
+              effect="plain"
+              :type="isExternalPath(scope.row.resourcePath) ? 'warning' : 'success'"
+            >
+              {{ isExternalPath(scope.row.resourcePath) ? '外部链接' : '本站文件' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="uploadTime" label="上传时间" width="170">
           <template #default="scope">{{ formatDate(scope.row.uploadTime) }}</template>
         </el-table-column>
-        <el-table-column label="操作">
+        <el-table-column label="操作" width="290" fixed="right">
           <template #default="scope">
-            <el-button size="small" type="primary" @click="downloadResource(scope.row)">直接下载</el-button>
+            <el-button
+              v-if="!isExternalPath(scope.row.resourcePath)"
+              size="small"
+              :disabled="!scope.row.resourcePath"
+              @click="togglePreview(scope.row)"
+            >
+              {{ previewRes?.resourceId === scope.row.resourceId ? '收起' : '预览' }}
+            </el-button>
+            <el-button
+              v-if="isExternalPath(scope.row.resourcePath)"
+              size="small"
+              type="primary"
+              @click="openExternal(scope.row)"
+            >
+              打开链接
+            </el-button>
+            <template v-else>
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="!scope.row.resourcePath"
+                @click="downloadResource(scope.row)"
+              >
+                下载
+              </el-button>
+              <!-- 「另存为…」只在支持 File System Access API 的浏览器上出现 -->
+              <el-button
+                v-if="canPickSavePath"
+                size="small"
+                :disabled="!scope.row.resourcePath"
+                @click="downloadResourceAs(scope.row)"
+              >
+                另存为…
+              </el-button>
+            </template>
             <el-button v-if="role === 'teacher'" size="small" type="danger" @click="deleteResource(scope.row)">删除</el-button>
           </template>
         </el-table-column>
@@ -225,9 +410,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, reactive } from 'vue'
+import { ref, onMounted, watch, reactive, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import request from '../utils/request'
+import { getRole, getToken, getUser } from '../utils/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const courses = ref([])
@@ -237,9 +423,19 @@ const courseLoading = ref(false)
 const courseQuery = reactive({ pageNum: 1, pageSize: 10, courseName: '', auditStatus: null })
 const enrolledCourses = ref([])
 const applies = ref([])
+/**
+ * 报名审核的筛选与分页。
+ *
+ * <p>数据是一次性全量取回的（教师自己那几门课的报名总量有限），
+ * 所以筛选和分页都在浏览器里做，不必再加服务端分页接口。
+ * {@code status} 默认 0 = 待审核 —— 「待办优先」：进页面先看到需要处理的。
+ */
+const applyQuery = reactive({ status: 0, courseId: null, studentName: '', pageNum: 1, pageSize: 10 })
+/** 教师自己发布的课程，供「报名审核」的课程筛选下拉使用 */
+const myCourses = ref([])
 const resources = ref([])
-const role = ref(localStorage.getItem('role'))
-const user = ref(JSON.parse(localStorage.getItem('user') || '{}'))
+const role = ref(getRole())
+const user = ref(getUser())
 const activeTab = ref(role.value === 'teacher' ? 'my' : 'all')
 
 const route = useRoute()
@@ -264,6 +460,13 @@ const applyQueryTab = () => {
 
 const showAddDialog = ref(false)
 const showResourceDialog = ref(false)
+
+/** 弹窗关掉时释放预览占用的 objectURL，别把 Blob 留在内存里 */
+watch(showResourceDialog, (open) => {
+  if (!open) {
+    closePreview()
+  }
+})
 const showAddResourceDialog = ref(false)
 const showStudentsDialog = ref(false)
 const courseStudents = ref([])
@@ -286,7 +489,7 @@ const newResource = ref({
  * 同理 headers 必须显式补上 token —— 否则上传请求会被鉴权拦成 401。
  */
 const uploadHeaders = {
-  Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+  Authorization: `Bearer ${getToken()}`
 }
 
 const handleUploadSuccess = (res) => {
@@ -382,25 +585,102 @@ const fetchEnrolledCourses = async () => {
 const fetchApplies = async () => {
   try {
     const res = await request.get('/course-apply/list')
-    const myCourses = await request.post('/course/query', { publishTeacherId: user.value.teacherId })
-    const myCourseIds = myCourses.map(c => c.courseId)
-    let filteredApplies = res.filter(apply => myCourseIds.includes(apply.courseId))
+    const ownCourses = await request.post('/course/query', { publishTeacherId: user.value.teacherId })
+    // 存到 ref 上：以前它只是个局部变量，所以「报名审核」的课程筛选下拉拿不到课程列表
+    myCourses.value = ownCourses || []
+    const myCourseIds = myCourses.value.map(c => c.courseId)
+    const filteredApplies = (res || []).filter(apply => myCourseIds.includes(apply.courseId))
 
     const allStudents = await request.get('/student/list')
-    
-    filteredApplies = filteredApplies.map(apply => {
-      const student = allStudents.find(s => s.studentId === apply.studentId)
-      const course = myCourses.find(c => c.courseId === apply.courseId)
+    const studentMap = new Map((allStudents || []).map(s => [s.studentId, s]))
+    const courseMap = new Map(myCourses.value.map(c => [c.courseId, c]))
+
+    applies.value = filteredApplies.map(apply => {
+      const student = studentMap.get(apply.studentId)
+      const course = courseMap.get(apply.courseId)
       return {
         ...apply,
         studentName: student ? student.studentName : '未知学员',
         courseName: course ? course.courseName : '未知课程'
       }
     })
-    applies.value = filteredApplies
   } catch (e) {
     console.error(e)
   }
+}
+
+/**
+ * 审核状态统计卡。
+ *
+ * <p>第一张「全部」卡（status = null）是显式的退出筛选出口：
+ * 以前只能靠"再点一次同一张卡"取消筛选 —— 这个交互太隐蔽，几乎没人能发现，
+ * 点完「已通过」就再也回不去看全部了。
+ * 放在最前面，总数一目了然，点它 = 清掉状态筛选（课程 / 姓名条件保留）。
+ */
+const applyStats = computed(() => {
+  const countOf = (status) => applies.value.filter(a => a.auditStatus === status).length
+  return [
+    { status: null, label: '全部', count: applies.value.length, color: '#409eff' },
+    { status: 0, label: '待审核', count: countOf(0), color: '#e6a23c' },
+    { status: 1, label: '已通过', count: countOf(1), color: '#67c23a' },
+    { status: 2, label: '已驳回', count: countOf(2), color: '#f56c6c' }
+  ]
+})
+
+/** 应用「状态 + 课程 + 姓名」三个条件后的报名列表 */
+const filteredApplies = computed(() =>
+  applies.value.filter(apply => {
+    if (applyQuery.status !== null && apply.auditStatus !== applyQuery.status) return false
+    if (applyQuery.courseId && apply.courseId !== applyQuery.courseId) return false
+    const keyword = applyQuery.studentName.trim()
+    if (keyword && !(apply.studentName || '').includes(keyword)) return false
+    return true
+  })
+)
+
+/** 前端分页：从筛完的结果里切当前页，避免把上千行一次性塞进 DOM */
+const pagedApplies = computed(() => {
+  const start = (applyQuery.pageNum - 1) * applyQuery.pageSize
+  return filteredApplies.value.slice(start, start + applyQuery.pageSize)
+})
+
+/**
+ * 页码越界自动拉回。
+ *
+ * <p>两种场景都会让当前页码"悬空"：
+ *   · 把每页条数从 10 调到 50，第 3 页的内容已经被第 1 页装下了；
+ *   · 在「待审核」里把最后一条点了通过，列表变空了但页码还停在原来那页。
+ * 两种情况的共同表现都是"表格突然空了"，像出了 bug，其实只是页码超界。
+ */
+watch(filteredApplies, (list) => {
+  const maxPage = Math.max(1, Math.ceil(list.length / applyQuery.pageSize))
+  if (applyQuery.pageNum > maxPage) {
+    applyQuery.pageNum = maxPage
+  }
+})
+
+/**
+ * 点统计卡切换筛选。
+ *
+ * <p>「全部」卡（null）点了就是清除状态筛选，不再做二次点击的反选 ——
+ * 现在有显式的「全部」出口，反选这个隐藏交互就不需要了；
+ * 但保留它也不会出错，于是只对非空状态做切换（点已选中的状态卡 = 取消该筛选）。
+ */
+const pickApplyStatus = (status) => {
+  applyQuery.status = status
+  applyQuery.pageNum = 1
+}
+
+/** 条件变了必须回到第 1 页，否则会停在一个筛完不存在的页码上 */
+const searchApplies = () => {
+  applyQuery.pageNum = 1
+}
+
+const resetApplySearch = () => {
+  applyQuery.status = 0
+  applyQuery.courseId = null
+  applyQuery.studentName = ''
+  applyQuery.pageNum = 1
 }
 
 const handleTabChange = () => {
@@ -537,17 +817,224 @@ const handleAddResource = async () => {
   }
 }
 
-const downloadResource = (resource) => {
-  if (resource.resourcePath) {
-    const link = document.createElement('a')
-    link.href = resource.resourcePath
-    link.download = resource.resourceName || ''
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  } else {
-    ElMessage.warning('该资源无有效路径')
+/**
+ * 是否是「外部链接」。
+ *
+ * <p>判断依据是路径本身而不是 resource_type —— 那个字段存的是**格式**
+ * （PDF / Video / Image），跟文件放在哪没有关系。本站上传的文件后端统一
+ * 返回 {@code /uploads/xxx}，其余一律按外链处理。
+ */
+const isExternalPath = (path) => /^https?:\/\//i.test(String(path || ''))
+
+/** 资源类型标签配色：纯区分用，没有业务含义 */
+const RES_TYPE_TAG_TYPES = { PDF: 'danger', Video: 'warning', Image: 'success' }
+const resourceTypeTag = (type) => RES_TYPE_TAG_TYPES[type] || 'info'
+
+/** 弹窗标题带上课程名：教师可能同时开好几个弹窗，不写清楚容易看串 */
+const resourceDialogTitle = computed(() =>
+  currentCourse.value ? `课程资源 · ${currentCourse.value.courseName}` : '课程资源'
+)
+
+/**
+ * 预览区状态。
+ *
+ * <p>预览内容走的是**鉴权下载接口**拿到的 Blob，再用 createObjectURL 生成临时地址
+ * —— 而不是直接把 /uploads/xxx 塞进 iframe。后者在 SecurityConfig 里是 permitAll，
+ * 等于预览也绕过了"是否选了这门课"的检查。
+ */
+const previewRes = ref(null)
+const previewUrl = ref('')
+const previewLoading = ref(false)
+/** pdf / image / video / other —— 决定预览区用哪个标签渲染 */
+const previewKind = ref('other')
+
+/** 按扩展名（优先）或资源类型判断文件形态，决定内嵌渲染方式 */
+const fileKind = (resource) => {
+  const path = String(resource?.resourcePath || '').toLowerCase()
+  const type = String(resource?.resourceType || '').toLowerCase()
+  if (/\.(png|jpe?g|gif|webp|bmp|svg)$/.test(path) || type === 'image') return 'image'
+  if (/\.(mp4|webm|ogg|mov|m4v)$/.test(path) || type === 'video') return 'video'
+  if (/\.pdf$/.test(path) || type === 'pdf') return 'pdf'
+  return 'other'
+}
+
+/** 收起预览：必须释放 objectURL，否则 Blob 会一直占着内存直到刷新页面 */
+const closePreview = () => {
+  if (previewUrl.value) {
+    window.URL.revokeObjectURL(previewUrl.value)
   }
+  previewUrl.value = ''
+  previewRes.value = null
+  previewKind.value = 'other'
+}
+
+/** 点「预览」展开、再点一次收起 */
+const togglePreview = async (resource) => {
+  if (previewRes.value?.resourceId === resource.resourceId) {
+    closePreview()
+    return
+  }
+  closePreview()
+
+  const kind = fileKind(resource)
+  previewRes.value = resource
+  previewKind.value = kind
+  // 外链不内嵌（对方站点通常禁止被 iframe 嵌套），不支持的格式也不用白跑一次请求
+  if (isExternalPath(resource.resourcePath) || kind === 'other') {
+    return
+  }
+
+  previewLoading.value = true
+  try {
+    const blob = await fetchResourceBlob(resource)
+    if (blob) {
+      previewUrl.value = window.URL.createObjectURL(blob)
+    } else {
+      previewRes.value = null
+    }
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+const openExternal = (resource) => {
+  window.open(resource.resourcePath, '_blank', 'noopener')
+}
+
+/**
+ * 下载资源。
+ *
+ * <p>本站文件**必须走服务端的鉴权下载接口**，不能让浏览器直接打开
+ * {@code /uploads/xxx}：那条路径在 SecurityConfig 里是 permitAll 的
+ * （浏览器用 img / a 标签访问时不带 Authorization 头，只能放行），
+ * 结果是「谁知道文件名，谁就能下载」。列表里那句「审核通过后可下载」
+ * 只是把按钮藏起来，属于 UI 遮蔽，不是权限控制。
+ * 走接口之后，服务端会用 JWT 里的身份复核「你是否真的选了这门课」。
+ *
+ * <p>外部链接没法由本站代理下载，只能交给浏览器新开标签页打开
+ * —— 这也解释了为什么原来外链点「直接下载」会跳到一个陌生页面：
+ * HTML5 的 download 属性对跨域地址是无效的，浏览器只能"导航过去"。
+ */
+/**
+ * 取资源的二进制内容。
+ *
+ * <p>抽出来是因为「下载」「另存为」「预览」三处都要用同一段逻辑，
+ * 尤其是这个坑必须只写一遍：后端业务失败（无权限 / 文件不存在）时
+ * 返回的仍是 HTTP 200 + JSON（项目的统一约定），必须识别出来，
+ * 否则会把一段错误 JSON 原样当成文件存到本地。
+ *
+ * @return 成功返回 Blob；失败返回 null（提示已在内部弹出）
+ */
+const fetchResourceBlob = async (resource) => {
+  try {
+    const blob = await request.get(`/course-resource/${resource.resourceId}/download`, {
+      responseType: 'blob'
+    })
+    if (blob?.type && blob.type.includes('json')) {
+      const text = await blob.text()
+      let message = '下载失败'
+      try {
+        message = JSON.parse(text).message || message
+      } catch (e) {
+        // 解析不了就用默认文案
+      }
+      ElMessage.error(message)
+      return null
+    }
+    return blob
+  } catch (e) {
+    // 拦截器已提示
+    return null
+  }
+}
+
+const downloadResource = async (resource) => {
+  if (!resource?.resourcePath) {
+    ElMessage.warning('该资源没有文件')
+    return
+  }
+  if (isExternalPath(resource.resourcePath)) {
+    openExternal(resource)
+    return
+  }
+  const blob = await fetchResourceBlob(resource)
+  if (blob) {
+    saveBlob(blob, buildFileName(resource))
+  }
+}
+
+/**
+ * 「另存为…」：弹出系统保存对话框，让用户自己选目录和文件名。
+ *
+ * <p>用的是 File System Access API 的 showSaveFilePicker。
+ * 这里必须说明一件事：**普通网页不能指定下载路径**，这是浏览器的安全沙箱
+ * 决定的（否则恶意站点可以往你硬盘任意位置写文件）。百度网盘能选路径，
+ * 是因为它装了本地客户端，不是纯网页做到的。
+ * showSaveFilePicker 是浏览器主动把选择权交给用户，所以才被允许。
+ *
+ * <p>支持范围：Chrome / Edge 86+。Firefox、Safari、手机浏览器不支持，
+ * 因此按钮在不支持的浏览器上直接不显示（渐进增强，而不是报错）。
+ */
+const canPickSavePath = typeof window !== 'undefined' && 'showSaveFilePicker' in window
+
+const downloadResourceAs = async (resource) => {
+  if (!resource?.resourcePath) {
+    ElMessage.warning('该资源没有文件')
+    return
+  }
+  if (isExternalPath(resource.resourcePath)) {
+    openExternal(resource)
+    return
+  }
+
+  const blob = await fetchResourceBlob(resource)
+  if (!blob) return
+
+  const fileName = buildFileName(resource)
+  const matched = /\.([a-z0-9]+)$/i.exec(fileName)
+  const ext = matched ? '.' + matched[1].toLowerCase() : ''
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: fileName,
+      types: ext
+        ? [{ description: '资源文件', accept: { 'application/octet-stream': [ext] } }]
+        : undefined
+    })
+    const writable = await handle.createWritable()
+    await writable.write(blob)
+    await writable.close()
+    ElMessage.success('已保存')
+  } catch (e) {
+    // 用户在系统对话框里点了取消 —— 不是错误，静默返回
+    if (e?.name === 'AbortError') {
+      return
+    }
+    // 其他失败（浏览器策略限制等）退回普通下载，保证功能不中断
+    saveBlob(blob, fileName)
+  }
+}
+
+/** 把二进制内容存成文件 */
+const saveBlob = (blob, fileName) => {
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+}
+
+/** 下载后的文件名 = 资源名称 + 原始扩展名（名称里已带同名扩展名就不重复叠加） */
+const buildFileName = (resource) => {
+  const name = (resource.resourceName || '资源').trim()
+  const matched = /\.([a-z0-9]+)$/i.exec(resource.resourcePath || '')
+  const ext = matched ? matched[1] : ''
+  if (!ext || name.toLowerCase().endsWith('.' + ext.toLowerCase())) {
+    return name
+  }
+  return `${name}.${ext}`
 }
 
 const deleteResource = async (resource) => {

@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '../router'
+import { clearAuth, getToken } from './auth'
 
 const request = axios.create({
   baseURL: '/api',
@@ -9,7 +10,7 @@ const request = axios.create({
 
 // ==================== 请求拦截器 ====================
 request.interceptors.request.use(config => {
-  const token = localStorage.getItem('token')
+  const token = getToken()
   if (token) {
     config.headers['Authorization'] = `Bearer ${token}`
   }
@@ -32,7 +33,7 @@ request.interceptors.response.use(response => {
     }
     // 业务失败（参数错 / 业务规则不满足）：提示并中断后续逻辑
     const msg = data.message || '操作失败'
-    ElMessage.error(msg)
+    fail(response.config, msg)
     return Promise.reject(new Error(msg))
   }
 
@@ -43,9 +44,7 @@ request.interceptors.response.use(response => {
     ElMessage.error('请求超时，请稍后重试')
   } else if (error.response && error.response.status === 401) {
     // 401 = 未登录 / token 失效 → 清干净本地状态并回登录页
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-    localStorage.removeItem('role')
+    clearAuth()
     if (router.currentRoute.value.path !== '/login') {
       router.push('/login')
       ElMessage.error('登录已过期，请重新登录')

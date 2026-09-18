@@ -17,6 +17,7 @@
   --app-gap: 16px;
   --app-page-bg: #f5f7fa;
   --app-border: #ebeef5;
+  --app-text: #303133;
   --app-text-secondary: #909399;
 }
 
@@ -87,11 +88,316 @@ body {
   padding: 16px 18px;
 }
 
-/* ===================== 分页器统一右对齐 ===================== */
+/* ===================== 统计卡：把「要处理的事」提到最上面 =====================
+   用于审核类页面（报名审核）。原来所有记录平铺在一张长表里，
+   处理不完的部分得一直往下滚 —— 统计卡把每个状态的条数摆到最前，
+   点一下即筛选，配合「默认停在待审核」实现待办优先。
+   用法：
+     <div class="stat-cards">
+       <div class="stat-card" :class="{ 'is-active': ... }" :style="{ '--stat-color': '#e6a23c' }">
+         <div class="stat-card-label">待审核</div>
+         <div class="stat-card-value">3</div>
+       </div>
+     </div>
+   ----------------------------------------------------------------------------- */
+.stat-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.stat-card {
+  flex: 1 1 140px;
+  min-width: 140px;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+
+.stat-card:hover {
+  box-shadow: var(--app-shadow-hover);
+}
+
+/* 选中态：左侧竖色条 + 同色描边，一眼看出当前在看哪个状态 */
+.stat-card.is-active {
+  border-color: var(--stat-color, var(--app-border));
+  box-shadow: inset 3px 0 0 var(--stat-color, transparent);
+}
+
+.stat-card-label {
+  font-size: 13px;
+  color: var(--app-text-secondary);
+}
+
+.stat-card-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--stat-color, #303133);
+}
+
+/* ===================== 课程卡片：课程 → 作业 两级导航的第一级 =====================
+   成熟学习平台（学习通 / 雨课堂 / Moodle / Canvas）的共性：作业永远挂在课程下面。
+   这里把「全站作业大列表」换成「先选课程、再看该课程的作业」。
+   ----------------------------------------------------------------------------- */
+.course-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.course-card {
+  padding: 16px 18px;
+  background: #fff;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
+}
+
+.course-card:hover {
+  border-color: #c6e2ff;
+  box-shadow: var(--app-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.course-card-name {
+  margin-bottom: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.course-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--app-text-secondary);
+}
+
+/* ===================== 成绩页 =====================
+   成绩卡片直接复用课程卡片，另外补三样：
+     · 顶部提示条：告诉学员"还有几次在等批改"，并说明未批改不计入平均分；
+     · 分数用大一号字重单独显示，不及格标红 —— 一列数字里要能一眼扫到重点；
+     · 未批改 / 未提交显示破折号而不是 0，避免"没批 = 零分"的误读。 */
+.score-tip {
+  margin-bottom: 14px;
+}
+
+.score-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.score-value.is-fail {
+  color: #f56c6c;
+}
+
+.score-empty {
+  color: var(--app-text-secondary);
+}
+
+/* 筛选条右侧的结果计数（"当前条件下 N 条"） */
+.apply-tip {
+  font-size: 13px;
+  color: var(--app-text-secondary);
+}
+
+/* ===================== 二级页头：返回入口 + 当前课程 =====================
+   第一级是课程卡片，第二级是某门课的作业列表。返回入口原来是一行 13px 的
+   文字链接，进去之后几乎找不到 —— 用户的第一反应是"我回不去了"。
+   现在做成「带边框的按钮 + 课程名」的整条页头：
+     · 按钮有底色、边框、hover 反色，尺寸按可点击的按钮来（不是链接字号的文字）；
+     · 右侧用大一号的字重写当前课程名，顺带把"我现在在哪"讲清楚；
+     · 整条有浅底 + 左侧色条，视觉上就是一个独立的功能区，不会被表格吞掉。
+   两个页面（学员端 / 教师端）共用这套类，改一处两边都生效。 */
+.subpage-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  background: #f7f9fc;
+  border: 1px solid var(--app-border);
+  border-left: 3px solid #409eff;
+  border-radius: var(--app-radius);
+}
+
+.subpage-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 38px;
+  padding: 0 18px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #409eff;
+  background: #fff;
+  border: 1px solid #a0cfff;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.subpage-back:hover {
+  color: #fff;
+  background: #409eff;
+  border-color: #409eff;
+}
+
+.subpage-title {
+  min-width: 0;
+}
+
+.subpage-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.subpage-meta {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--app-text-secondary);
+}
+
+/* ===================== 资源下载弹窗 ===================== */
+.res-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.res-count {
+  font-size: 13px;
+  color: var(--app-text-secondary);
+}
+
+/* --------------------- 资源预览区（弹窗内嵌） ---------------------
+   点「预览」后展开在资源列表上方：PDF / 图片用 iframe 内嵌，视频用 video 标签。
+   高度固定 420px —— 弹窗里给一个可预期的可视区域，比随内容忽大忽小更好用。 */
+.res-preview {
+  border: 1px solid var(--app-border, #ebeef5);
+  border-radius: 6px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.res-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--app-bg-hover, #f8f9fb);
+  border-bottom: 1px solid var(--app-border, #ebeef5);
+}
+
+.res-preview-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.res-preview-body {
+  height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fafafa;
+}
+
+.res-preview-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.res-preview-video {
+  width: 100%;
+  max-height: 100%;
+  background: #000;
+}
+
+.res-preview-tip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--app-text-secondary, #909399);
+}
+
+.res-preview-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--app-border, #ebeef5);
+}
+
+.res-hint {
+  font-size: 12px;
+  color: #909399;
+}
+
+/* ===================== 分页器统一：左总数 / 中页码 / 右每页条数 =====================
+   所有列表页共用一套分页外观，模板里只需要写：
+     <div class="pagination-bar">
+       <el-pagination background layout="total, prev, pager, next, sizes" :pager-count="5" .../>
+     </div>
+   实现思路：el-pagination 本身是 flex，把它的子元素按「左固定宽 / 中间自动 / 右固定宽」
+   三段排开。因为左右两块等宽（都 140px），中间页码组两侧分到的剩余空间相等，
+   页码就会自然落在整行的正中间 —— 不需要额外包一层容器。
+   ----------------------------------------------------------------------------- */
 .pagination-bar {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   padding-top: 14px;
+}
+
+/* 让分页组件自己铺满整行，三块才能被推开 */
+.pagination-bar .el-pagination {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+/* 左：共 N 条（中文文案由 Element Plus 的 zh-cn 语言包提供） */
+.pagination-bar .el-pagination__total {
+  flex: 0 0 140px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--app-text-secondary);
+}
+
+/* 中：页码组。左侧一个 auto 外边距，把页码推到左块之后 */
+.pagination-bar .el-pagination > .btn-prev {
+  margin-left: auto;
+}
+
+/* 右：每页条数。与左块等宽，并用 auto 外边距顶到最右 */
+.pagination-bar .el-pagination__sizes {
+  flex: 0 0 140px;
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 0 auto;
+}
+
+/* 右侧那个框：固定宽度 + 圆角，看起来是一个独立的下拉框 */
+.pagination-bar .el-pagination__sizes .el-select {
+  width: 104px;
+}
+
+.pagination-bar .el-pagination__sizes .el-select__wrapper {
+  border-radius: var(--app-radius-sm);
 }
 
 /* ===================== 表格观感 ===================== */

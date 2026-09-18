@@ -16,6 +16,8 @@ public class ForumPost {
     private String postTitle;
     private String postContent;
     private Date publishTime;
+    /** 最后一次编辑时间（null = 从未编辑过，前端据此显示「已编辑」角标） */
+    private Date editTime;
     private Integer likeNum;
     private Integer collectNum;
 }

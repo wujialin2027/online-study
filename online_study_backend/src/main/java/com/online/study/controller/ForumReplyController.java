@@ -13,13 +13,19 @@ import com.online.study.service.ForumPostService;
 import com.online.study.service.ForumReplyService;
 import com.online.study.utils.CurrentUserUtil;
 import com.online.study.utils.QueryUtil;
+import com.online.study.utils.UserNameResolver;
+import com.online.study.vo.ForumReplyVO;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 论坛回复接口
@@ -45,6 +51,9 @@ public class ForumReplyController {
     @Autowired
     private ForumPostService forumPostService;
 
+    @Autowired
+    private UserNameResolver userNameResolver;
+
     @GetMapping("/list")
     public List<ForumReply> list() {
         return service.list();
@@ -65,11 +74,16 @@ public class ForumReplyController {
      * <p>按回复时间正序返回 —— 讨论串要按先后顺序读，倒序会把对话逻辑打乱。
      */
     @PostMapping("/page")
-    public Result<PageResult<ForumReply>> page(@RequestBody Map<String, Object> params) {
+    public Result<PageResult<ForumReplyVO>> page(@RequestBody Map<String, Object> params) {
         Page<ForumReply> page = PageQuery.of(params);
         QueryWrapper<ForumReply> wrapper = QueryUtil.buildSafeWrapper(ForumReply.class, params);
         wrapper.orderByAsc("reply_time");
-        return Result.success(PageResult.of(service.page(page, wrapper)));
+        Page<ForumReply> result = service.page(page, wrapper);
+        return Result.success(new PageResult<>(
+                toVOList(result.getRecords()),
+                result.getTotal(),
+                result.getCurrent(),
+                result.getSize()));
     }
 
     /** 发表回复。回复者身份与时间由服务端写入。 */
@@ -118,5 +132,34 @@ public class ForumReplyController {
         }
         service.removeById(id);
         return Result.success();
+    }
+
+    // ==================== 内部辅助 ====================
+
+    /**
+     * 回复实体 → 视图对象，补上回复者姓名。
+     *
+     * <p>姓名的取法与帖子一致：把 (角色,ID) 收齐后一次性批量解析，
+     * 无论一页多少条回复，最多查 3 次库 —— 不在循环里逐条查。
+     */
+    private List<ForumReplyVO> toVOList(List<ForumReply> replies) {
+        List<ForumReplyVO> result = new ArrayList<>();
+        if (replies == null || replies.isEmpty()) {
+            return result;
+        }
+
+        Set<String> refs = replies.stream()
+                .map(reply -> UserNameResolver.key(reply.getReplierRole(), reply.getReplierId()))
+                .collect(Collectors.toSet());
+        Map<String, String> names = userNameResolver.resolve(refs);
+
+        for (ForumReply reply : replies) {
+            ForumReplyVO vo = new ForumReplyVO();
+            BeanUtils.copyProperties(reply, vo);
+            vo.setReplierName(names.getOrDefault(
+                    UserNameResolver.key(reply.getReplierRole(), reply.getReplierId()), "未知用户"));
+            result.add(vo);
+        }
+        return result;
     }
 }

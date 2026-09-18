@@ -1,17 +1,27 @@
 <template>
   <div class="detail-page">
-    <el-page-header content="帖子详情" class="page-header" @back="goBack" />
+    <div class="subpage-head">
+      <el-button class="subpage-back" :icon="ArrowLeft" @click="goBack">
+        返回论坛
+      </el-button>
+      <span class="subpage-title">帖子详情</span>
+    </div>
 
     <el-card v-loading="loading" shadow="never" class="post-card">
       <template v-if="post">
         <div class="post-head">
           <h2 class="post-title">{{ post.postTitle }}</h2>
+          <!-- 改过就留痕，读者知道内容被修订过 -->
+          <el-tag v-if="post.editTime" size="small" type="info">已编辑</el-tag>
+        </div>
+
+        <!-- 发帖人姓名 + 角色：只有角色标签时看不出究竟是谁发的 -->
+        <div class="post-meta">
+          <span class="post-author">{{ post.publisherName || '未知用户' }}</span>
           <el-tag size="small" :type="roleTagType(post.publisherRole)">
             {{ roleText(post.publisherRole) }}
           </el-tag>
-        </div>
-
-        <div class="post-meta">
+          <span class="dot">·</span>
           <span>{{ formatDate(post.publishTime) }}</span>
           <span class="dot">·</span>
           <span>{{ post.replyNum }} 条回复</span>
@@ -43,6 +53,15 @@
 
           <div class="spacer"></div>
 
+          <!-- 编辑走独立页面，且只在发布后 30 分钟内出现 -->
+          <el-button
+            v-if="canEdit"
+            size="small"
+            @click="router.push(`/forum/${postId()}/edit`)"
+          >
+            编辑
+          </el-button>
+
           <el-button v-if="canManage" size="small" type="danger" plain @click="deletePost">
             删除帖子
           </el-button>
@@ -61,6 +80,8 @@
 
       <div v-for="reply in replies" :key="reply.replyId" class="reply-item">
         <div class="reply-head">
+          <!-- 回复人姓名同样补上：原来是只有角色标签，看不出是谁回的 -->
+          <span class="reply-author">{{ reply.replierName || '未知用户' }}</span>
           <el-tag size="small" :type="roleTagType(reply.replierRole)">
             {{ roleText(reply.replierRole) }}
           </el-tag>
@@ -99,7 +120,9 @@
 <script setup>
 import { computed, ref, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import request from '../utils/request'
+import { getRole, getUser } from '../utils/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
@@ -111,8 +134,8 @@ const loading = ref(false)
 const submitting = ref(false)
 const replyContent = ref('')
 
-const role = ref(localStorage.getItem('role') || '')
-const user = ref(JSON.parse(localStorage.getItem('user') || '{}'))
+const role = ref(getRole())
+const user = ref(getUser())
 
 const ROLE_TEXT = { admin: '管理员', teacher: '教师', student: '学员' }
 const ROLE_TAG = { admin: 'danger', teacher: 'warning', student: '' }
@@ -261,6 +284,17 @@ const canManage = computed(() => {
   )
 })
 
+/**
+ * 编辑窗口：发布后 30 分钟内可改（管理员不受限）。
+ * 与列表页用的是同一套规则；真正的时限判定仍在后端。
+ */
+const EDIT_WINDOW_MS = 30 * 60 * 1000
+const canEdit = computed(() => {
+  if (!post.value || !canManage.value || !post.value.publishTime) return false
+  if (role.value === 'admin') return true
+  return Date.now() - new Date(post.value.publishTime).getTime() < EDIT_WINDOW_MS
+})
+
 const deletePost = async () => {
   try {
     await ElMessageBox.confirm('删除后不可恢复，确定吗？', '删除帖子', {
@@ -287,10 +321,6 @@ onMounted(loadAll)
 </script>
 
 <style scoped>
-.page-header {
-  margin-bottom: 14px;
-}
-
 .post-card {
   margin-bottom: 14px;
 }
@@ -311,8 +341,16 @@ onMounted(loadAll)
   color: #909399;
   font-size: 12px;
   display: flex;
+  align-items: center;
   gap: 6px;
   margin-top: 8px;
+}
+
+/* 发帖人姓名用深色压住，避免和时间戳混成一片 */
+.post-author {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 /* pre-wrap 让用户在正文里敲的回车能真的换行显示 */
@@ -356,6 +394,13 @@ onMounted(loadAll)
   align-items: center;
   gap: 10px;
   margin-bottom: 6px;
+}
+
+/* 回复人姓名 */
+.reply-author {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .reply-time {

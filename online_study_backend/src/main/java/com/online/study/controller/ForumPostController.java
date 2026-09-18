@@ -15,6 +15,7 @@ import com.online.study.service.ForumPostService;
 import com.online.study.service.ForumReplyService;
 import com.online.study.utils.CurrentUserUtil;
 import com.online.study.utils.QueryUtil;
+import com.online.study.utils.UserNameResolver;
 import com.online.study.vo.ForumInteractionVO;
 import com.online.study.vo.ForumPostVO;
 import org.springframework.beans.BeanUtils;
@@ -55,6 +56,18 @@ public class ForumPostController {
     /** 撤回时限：5 分钟。计时必须在服务端，前端倒计时只用于控制按钮显隐 */
     private static final long RECALL_WINDOW_MS = 5 * 60 * 1000L;
 
+    /**
+     * 编辑时限：30 分钟。
+     *
+     * <h3>为什么不是「禁止编辑」也不是「随便编辑」</h3>
+     * 完全不让人改不合理：写错一个字就只能删帖重发，而删帖会连带丢掉所有回复。
+     * 但无限期可改同样是问题：先发一个正常帖子、等讨论起来之后把内容改成别的，
+     * 谁也没法追溯。业界通行的折中是<b>发布后一段时间内可自由修改，超时锁定</b>
+     * （Discourse、V2EX 都是这个思路）。改过的时间记进 {@code edit_time}，
+     * 前端据此显示「已编辑」角标 —— 留痕比禁止更能建立信任。
+     */
+    private static final long EDIT_WINDOW_MS = 30 * 60 * 1000L;
+
     @Autowired
     private ForumPostService service;
 
@@ -63,6 +76,9 @@ public class ForumPostController {
 
     @Autowired
     private ForumInteractionService interactionService;
+
+    @Autowired
+    private UserNameResolver userNameResolver;
 
     // ==================== 查询 ====================
 
@@ -88,6 +104,10 @@ public class ForumPostController {
      */
     @PostMapping("/page")
     public Result<PageResult<ForumPostVO>> page(@RequestBody Map<String, Object> params) {
+        // scope 不是查询条件，先取出来再移除，免得 QueryUtil 打一条"非法字段"警告
+        Object scopeObj = params.remove("scope");
+        String scope = scopeObj == null ? null : scopeObj.toString();
+
         Page<ForumPost> page = PageQuery.of(params);
         QueryWrapper<ForumPost> wrapper = QueryUtil.buildSafeWrapper(ForumPost.class, params);
 
@@ -98,6 +118,38 @@ public class ForumPostController {
             String kw = keyword.toString().trim();
             wrapper.and(w -> w.like("post_title", kw).or().like("post_content", kw));
         }
+
+        // 「我的发帖」「我的收藏」两个页签走同一个接口，只是多一个过滤条件 ——
+        // 分页、搜索、排序的逻辑完全一样，没必要复制成三个接口。
+        String role = CurrentUserUtil.getRole();
+        Integer uid = CurrentUserUtil.getId();
+        if ("mine".equals(scope)) {
+            if (uid == null || role == null) {
+                throw new BizException(ResultCode.UNAUTHORIZED, "登录状态已失效，请重新登录");
+            }
+            wrapper.eq("publisher_role", role).eq("publisher_id", uid);
+        } else if ("collected".equals(scope)) {
+            if (uid == null || role == null) {
+                throw new BizException(ResultCode.UNAUTHORIZED, "登录状态已失效，请重新登录");
+            }
+            // 先从互动表取出我收藏过的帖子 ID，再按 ID 过滤。
+            // 收藏夹里没东西时直接返回空页：SQL 里 IN () 是语法错误，也省一次多余查询。
+            List<Integer> collectedIds = interactionService.list(new QueryWrapper<ForumInteraction>()
+                            .select("post_id")
+                            .eq("user_role", role)
+                            .eq("user_id", uid)
+                            .eq("type", ForumInteraction.TYPE_COLLECT))
+                    .stream()
+                    .map(ForumInteraction::getPostId)
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+            if (collectedIds.isEmpty()) {
+                return Result.success(new PageResult<>(List.<ForumPostVO>of(), 0L, 1L, page.getSize()));
+            }
+            wrapper.in("post_id", collectedIds);
+        }
+
         wrapper.orderByDesc("publish_time");
 
         Page<ForumPost> result = service.page(page, wrapper);
@@ -163,8 +215,18 @@ public class ForumPostController {
             throw new BizException(ResultCode.DATA_NOT_FOUND, "帖子不存在或已被删除");
         }
         requireOwnerOrAdmin(db.getPublisherId(), db.getPublisherRole(), "修改");
+
+        // 编辑限时：发布超过 30 分钟就锁定，管理员不受限（用于处理违规内容）。
+        // 判定放在服务端 —— 前端隐藏编辑按钮只是提示，绕过前端直接调接口照样被拦。
+        if (!CurrentUserUtil.isAdmin() && db.getPublishTime() != null
+                && System.currentTimeMillis() - db.getPublishTime().getTime() > EDIT_WINDOW_MS) {
+            throw new BizException(ResultCode.FORBIDDEN,
+                    "帖子发布已超过 " + (EDIT_WINDOW_MS / 60000) + " 分钟，不能再编辑");
+        }
+
         db.setPostTitle(entity.getPostTitle());
         db.setPostContent(entity.getPostContent());
+        db.setEditTime(new Date());   // 留痕：前端据此显示「已编辑」角标
         service.updateById(db);
         return Result.success("修改成功", db);
     }
@@ -232,8 +294,9 @@ public class ForumPostController {
     /**
      * 实体列表 → 视图对象列表。
      *
-     * <p>这里刻意写成"批处理"：无论 10 条还是 50 条帖子，都只额外查两次库
-     * （一次互动状态、一次回复数）。如果写成循环里逐条查，就是典型的 N+1 查询。
+     * <p>这里刻意写成"批处理"：无论 10 条还是 50 条帖子，都只额外查三次库
+     * （一次互动状态、一次回复数、一次作者姓名）。如果写成循环里逐条查，
+     * 20 条帖子就是 60 次数据库往返 —— 典型的 N+1 查询。
      */
     private List<ForumPostVO> toVOList(List<ForumPost> posts) {
         List<ForumPostVO> result = new ArrayList<>();
@@ -260,6 +323,13 @@ public class ForumPostController {
             }
         }
 
+        // ③ 发帖人姓名。把 (角色,ID) 收齐后交给解析器批量查 ——
+        // 无论多少条帖子，最多只查 3 次（学员表 / 教师表 / 管理员表）。
+        Set<String> authorRefs = posts.stream()
+                .map(post -> UserNameResolver.key(post.getPublisherRole(), post.getPublisherId()))
+                .collect(Collectors.toSet());
+        Map<String, String> authorNames = userNameResolver.resolve(authorRefs);
+
         for (ForumPost post : posts) {
             ForumPostVO vo = new ForumPostVO();
             BeanUtils.copyProperties(post, vo);
@@ -267,6 +337,8 @@ public class ForumPostController {
             vo.setLiked(types.contains(ForumInteraction.TYPE_LIKE));
             vo.setCollected(types.contains(ForumInteraction.TYPE_COLLECT));
             vo.setReplyNum(replyCounts.getOrDefault(post.getPostId(), 0));
+            vo.setPublisherName(authorNames.getOrDefault(
+                    UserNameResolver.key(post.getPublisherRole(), post.getPublisherId()), "未知用户"));
             result.add(vo);
         }
         return result;

@@ -9,6 +9,7 @@ import com.online.study.common.ResultCode;
 import com.online.study.entity.CourseApply;
 import com.online.study.exception.BizException;
 import com.online.study.service.CourseApplyService;
+import com.online.study.utils.CurrentUserUtil;
 import com.online.study.utils.QueryUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,13 +39,32 @@ public class CourseApplyController {
     @Autowired
     private CourseApplyService service;
 
+    /**
+     * 报名记录列表（教师审核页用）。
+     *
+     * <p>学员调用时强制只返回**自己的**报名 —— 这张表里是全体学员的报名数据，
+     * 原来不加过滤，任何学员登录后都能把别人的报名记录整表拉走。
+     */
     @GetMapping("/list")
     public List<CourseApply> list() {
+        if ("student".equals(CurrentUserUtil.getRole())) {
+            return service.list(new QueryWrapper<CourseApply>()
+                    .eq("student_id", CurrentUserUtil.getId()));
+        }
         return service.list();
     }
 
+    /**
+     * 条件查询。
+     *
+     * <p>学员调用时忽略前端传的 {@code studentId}，一律以 JWT 里的身份为准 ——
+     * 前端传的 ID 是可以随手改的，不能拿来决定"查谁的报名"。
+     */
     @PostMapping("/query")
     public List<CourseApply> query(@RequestBody Map<String, Object> params) {
+        if ("student".equals(CurrentUserUtil.getRole())) {
+            params.put("studentId", CurrentUserUtil.getId());
+        }
         QueryWrapper<CourseApply> wrapper = QueryUtil.buildSafeWrapper(CourseApply.class, params);
         return service.list(wrapper);
     }

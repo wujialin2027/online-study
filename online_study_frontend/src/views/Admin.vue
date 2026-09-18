@@ -129,7 +129,8 @@
         <div class="pagination-bar">
           <el-pagination
             background
-            layout="total, sizes, prev, pager, next"
+            layout="total, prev, pager, next, sizes"
+            :pager-count="5"
             :total="logTotal"
             :page-sizes="[5, 10, 20, 50]"
             v-model:current-page="logQuery.pageNum"

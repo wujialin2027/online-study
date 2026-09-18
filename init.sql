@@ -182,10 +182,13 @@ VALUES ('admin', '$2a$10$Mamia1SxQ4A7EwtmexR94.VjRTH5049bQV5oX3h5A1Oi0tldl3/LO',
  ('Spring Boot高级实战', '深入理解Spring Boot原理及微服务开发。', '6周', '有Java基础', 1, 1, NOW()),
  ('Vue3全家桶实战', '构建现代化前端应用。', '5周', '有JS基础', 2, 0, NOW());
  
+ -- 演示课件：指向 online_study_backend/uploads/ 下真实存在的文件（demo-* 例外入库）。
+ -- 早先这里写的是 http://example.com/*.pdf 之类的占位地址，点「下载」会跳到
+ -- example.com 的 "Example Domain" 页面 —— 不是代码 bug，是假数据。
  INSERT INTO course_resource (course_id, resource_name, resource_type, resource_path, resource_photo, upload_time, upload_teacher_id) VALUES
-(1, 'Java基础第一章课件', 'PDF', 'http://example.com/java_ch1.pdf', NULL, NOW(), 1),
-(1, 'Java环境搭建视频', 'Video', 'http://example.com/java_env.mp4', NULL, NOW(), 1),
-(2, 'Spring Boot源码分析', 'PDF', 'http://example.com/springboot_src.pdf', NULL, NOW(), 1);
+(1, 'Java基础第一章课件', 'PDF', '/uploads/demo-java-ch1.pdf', NULL, NOW(), 1),
+(1, 'Java环境搭建讲义', 'PDF', '/uploads/demo-java-env.pdf', NULL, NOW(), 1),
+(2, 'Spring Boot源码分析', 'PDF', '/uploads/demo-springboot-src.pdf', NULL, NOW(), 1);
  
  INSERT INTO homework (course_id, homework_name, homework_content, deadline, publish_teacher_id, publish_time) VALUES
  (1, 'Java基础第一次作业', '请完成课后练习题1-5。', DATE_ADD(NOW(), INTERVAL 7 DAY), 1, NOW()),

@@ -102,6 +102,17 @@ public class CourseApplyServiceImpl extends ServiceImpl<CourseApplyMapper, Cours
             throw new BizException(ResultCode.DATA_NOT_FOUND, "报名记录不存在");
         }
 
+        // 越权校验：教师只能审核**自己发布的课程**的报名，管理员不受限。
+        // 不加这个检查的话，任何教师拿着别人的 applyId 都能通过/驳回别人的学员 ——
+        // 接口上的 @PreAuthorize 只挡住了学员，挡不住"教师 A 审教师 B 的课"。
+        if (!CurrentUserUtil.isAdmin()) {
+            Course course = courseMapper.selectById(apply.getCourseId());
+            if (course == null
+                    || !Objects.equals(course.getPublishTeacherId(), CurrentUserUtil.getId())) {
+                throw new BizException(ResultCode.FORBIDDEN, "只能审核自己发布的课程的报名");
+            }
+        }
+
         int oldStatus = apply.getAuditStatus() == null ? STATUS_PENDING : apply.getAuditStatus();
         if (oldStatus == auditStatus) {
             throw new BizException("该报名当前已是此状态，无需重复操作");

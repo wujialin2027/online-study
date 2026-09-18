@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { getRole, getToken } from '../utils/auth'
 
 /**
  * 路由表
@@ -40,10 +41,32 @@ const routes = [
         meta: { title: '作业管理', roles: ['student', 'teacher'] }
       },
       {
+        // 智能助教：所有登录角色都能用（学员问知识题、教师查作业要求都合适）
+        path: 'assistant',
+        name: 'Assistant',
+        component: () => import('../views/Assistant.vue'),
+        meta: { title: '智能助教' }
+      },
+      {
         path: 'forum',
         name: 'Forum',
         component: () => import('../views/Forum.vue'),
         meta: { title: '交流论坛' }
+      },
+      {
+        // 发帖 / 编辑帖子：独立页面而不是弹窗（长表单该有自己的页面）。
+        // 必须写在 'forum/:id' 之前 —— 否则 /forum/new 会被 :id 当成 id="new" 吃掉。
+        // （vue-router 4 本身也会按静态优先排序，但显式放前面更好读、不依赖内部规则）
+        path: 'forum/new',
+        name: 'ForumNew',
+        component: () => import('../views/ForumEdit.vue'),
+        meta: { title: '发布帖子', hideInMenu: true }
+      },
+      {
+        path: 'forum/:id/edit',
+        name: 'ForumEdit',
+        component: () => import('../views/ForumEdit.vue'),
+        meta: { title: '编辑帖子', hideInMenu: true }
       },
       {
         // 帖子详情：hideInMenu 让侧边栏菜单跳过它（菜单是从路由表生成的，
@@ -70,8 +93,7 @@ const router = createRouter({
   routes
 })
 
-/** 当前登录角色（登录成功后写入 localStorage） */
-const currentRole = () => localStorage.getItem('role') || ''
+/** 当前登录角色、token 的读取统一走 utils/auth.js（兼容 localStorage 与 sessionStorage） */
 
 /**
  * 全局前置守卫
@@ -83,9 +105,13 @@ const currentRole = () => localStorage.getItem('role') || ''
  *   · 有些页面在未登录时压根不发请求（按 role 分支判断），于是既不显示数据、
  *     也不跳转，卡在空白状态 —— 这是最难排查的一种。
  * 现在改为「进入页面前先判断」，并且带 redirect 参数，登录后能跳回原目标页。
+ *
+ * <p>关于"为什么一打开就是已登录"：token 存在 localStorage（勾了「记住我」）时会跨会话保留，
+ * 所以直接访问 /login 也会被下面的第一个分支弹回首页。不勾「记住我」时存的是
+ * sessionStorage，关掉浏览器标签就失效，再打开会正常看到登录页。见 utils/auth.js。
  */
 router.beforeEach((to) => {
-  const token = localStorage.getItem('token')
+  const token = getToken()
 
   // 公开页面（登录页）
   if (to.meta?.public) {
@@ -104,7 +130,7 @@ router.beforeEach((to) => {
   // 让他重新登录没有任何意义（登完依然没有管理员权限）。
   // 但静默跳转会让用户以为"点错了"，所以补一句提示。
   const roles = to.meta?.roles
-  if (Array.isArray(roles) && roles.length > 0 && !roles.includes(currentRole())) {
+  if (Array.isArray(roles) && roles.length > 0 && !roles.includes(getRole())) {
     ElMessage.warning('没有权限访问该页面')
     return { path: '/dashboard' }
   }

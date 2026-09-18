@@ -80,19 +80,21 @@ import {
   Expand,
   Fold,
   HomeFilled,
+  MagicStick,
   Notebook,
   Setting,
   SwitchButton
 } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
+import { clearAuth, getRole, getUser } from '../utils/auth'
 
 const route = useRoute()
 const router = useRouter()
 
 const isCollapse = ref(false)
 
-const user = ref(JSON.parse(localStorage.getItem('user') || '{}'))
-const role = ref(localStorage.getItem('role') || '')
+const user = ref(getUser())
+const role = ref(getRole())
 
 const ROLE_TEXT = { admin: '管理员', teacher: '教师', student: '学员' }
 
@@ -113,6 +115,7 @@ const MENU_ICONS = {
   dashboard: HomeFilled,
   courses: Notebook,
   homework: Document,
+  assistant: MagicStick,
   forum: ChatDotRound,
   admin: Setting
 }
@@ -155,9 +158,8 @@ const handleCommand = async (command) => {
   // ⚠️ token 必须一起清掉。
   // 原代码只删了 user / role，token 仍留在 localStorage ——
   // 相当于「点了退出，但凭证还在浏览器里」，任何人拿到这台电脑都能继续用。
-  localStorage.removeItem('token')
-  localStorage.removeItem('user')
-  localStorage.removeItem('role')
+  // clearAuth() 会把 localStorage 和 sessionStorage 两边都清干净。
+  clearAuth()
   router.push('/login')
 }
 </script>
