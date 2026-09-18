@@ -176,6 +176,16 @@ public class CourseController {
     /**
      * 删除课程（含级联）。
      *
+     * <h3>为什么教师不能直接删</h3>
+     * 这是一个「级联 + 不可恢复」的动作：课程下的资源、报名、成绩、作业与全部
+     * 提交记录会一起消失，学员的作业和分数也随之丢失。所以：
+     * <ul>
+     *   <li><b>管理员</b>：直接删除（本人就是终审，没有审批自己的道理）；</li>
+     *   <li><b>教师</b>：只能通过 {@code POST /approval-request/submit}
+     *       提交删除申请并写明理由，由管理员在「审批中心」同意后才真正执行。</li>
+     * </ul>
+     * 原来教师点一下按钮就删库，管理员事后只能翻日志 —— 现在留痕在申请与审批意见里。
+     *
      * <p>级联删除的逻辑在 {@code CourseServiceImpl#removeCourseCascade}，
      * 那里加了 {@code @Transactional} 保证 5 张表的删除是一个原子操作。
      * Controller 只做权限判断与转发。
@@ -184,13 +194,13 @@ public class CourseController {
     @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     @OperationLog(module = "课程", operation = "删除课程")
     public Result<Boolean> delete(@PathVariable Integer id) {
+        if (!CurrentUserUtil.isAdmin()) {
+            throw new BizException(ResultCode.FORBIDDEN,
+                    "删除课程需要管理员审批，请提交删除申请并填写理由");
+        }
         Course db = service.getById(id);
         if (db == null) {
             throw new BizException(ResultCode.DATA_NOT_FOUND, "课程不存在");
-        }
-        if (!CurrentUserUtil.isAdmin()
-                && !Objects.equals(db.getPublishTeacherId(), CurrentUserUtil.getId())) {
-            throw new BizException(ResultCode.FORBIDDEN, "只能删除自己发布的课程");
         }
         return Result.success(service.removeCourseCascade(id));
     }

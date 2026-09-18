@@ -35,3 +35,8 @@ ai:
   base-url: ${AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
   chat-model: ${AI_CHAT_MODEL:qwen-plus}
   embedding-model: ${AI_EMBEDDING_MODEL:text-embedding-v4}
+
+# 自助注册开关（默认 true 开放）。部署到公网做演示时改为 false，
+# 关闭「注册」入口，防止陌生人往演示环境灌垃圾数据；演示账号直接初始化进数据库
+app:
+  register-enabled: true

@@ -47,11 +47,17 @@ public class CourseApplyController {
      */
     @GetMapping("/list")
     public List<CourseApply> list() {
+        List<CourseApply> applies;
         if ("student".equals(CurrentUserUtil.getRole())) {
-            return service.list(new QueryWrapper<CourseApply>()
+            applies = service.list(new QueryWrapper<CourseApply>()
                     .eq("student_id", CurrentUserUtil.getId()));
+        } else {
+            applies = service.list();
         }
-        return service.list();
+        // 补「驳回审批中」标记：教师提交驳回申请后，报名的 audit_status 仍是待审核，
+        // 列表上得让两边都能看出"有一张单子正在等管理员签字"
+        service.fillRejectPending(applies);
+        return applies;
     }
 
     /**
@@ -66,7 +72,9 @@ public class CourseApplyController {
             params.put("studentId", CurrentUserUtil.getId());
         }
         QueryWrapper<CourseApply> wrapper = QueryUtil.buildSafeWrapper(CourseApply.class, params);
-        return service.list(wrapper);
+        List<CourseApply> applies = service.list(wrapper);
+        service.fillRejectPending(applies);
+        return applies;
     }
 
     /**

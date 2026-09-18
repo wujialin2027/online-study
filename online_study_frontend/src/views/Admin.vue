@@ -2,7 +2,7 @@
   <div>
     <div class="page-head">
       <h2>系统管理</h2>
-      <p class="subtitle">账号管理 · 课程审核 · 操作日志（超级管理员专属）</p>
+      <p class="subtitle">账号管理 · 课程审核 · 敏感操作审批 · 操作日志（超级管理员专属）</p>
     </div>
 
     <el-tabs v-model="activeTab">
@@ -67,6 +67,53 @@
               <el-button size="small" type="success" v-if="scope.row.auditStatus === 0" @click="auditCourse(scope.row, 1)">通过</el-button>
               <el-button size="small" type="danger" v-if="scope.row.auditStatus === 0" @click="auditCourse(scope.row, 2)">驳回</el-button>
               <el-button size="small" type="danger" @click="deleteCourse(scope.row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+
+      <!-- ==================== 审批中心 ==================== -->
+      <!-- 教师端提交的「删除课程 / 驳回报名」申请都在这里处理：
+           同意才会真正执行（删课程是级联删除，驳回会写进报名记录给学员看） -->
+      <el-tab-pane label="审批中心" name="approval">
+        <div class="filter-bar">
+          <el-select v-model="approvalQuery.status" placeholder="全部状态" clearable style="width: 130px" @change="fetchApprovals">
+            <el-option label="待审批" :value="0" />
+            <el-option label="已通过" :value="1" />
+            <el-option label="已驳回" :value="2" />
+          </el-select>
+          <el-button type="primary" @click="fetchApprovals">查询</el-button>
+          <el-button @click="resetApprovalQuery">重置</el-button>
+          <div class="spacer"></div>
+          <span class="approval-tip">待审批 {{ approvalPending }} 条</span>
+          <el-button text @click="fetchApprovals">刷新</el-button>
+        </div>
+
+        <el-table :data="approvals" v-loading="approvalLoading" stripe style="width: 100%"
+                  empty-text="暂无审批申请">
+          <el-table-column prop="requestTypeText" label="申请类型" width="100" />
+          <el-table-column prop="targetDesc" label="申请对象" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="applicantName" label="申请人" width="100" />
+          <el-table-column prop="reason" label="申请理由" min-width="200" show-overflow-tooltip />
+          <el-table-column label="状态" width="95">
+            <template #default="scope">
+              <el-tag :type="scope.row.status === 1 ? 'success' : (scope.row.status === 2 ? 'danger' : 'info')">
+                {{ scope.row.statusText }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="审批意见" min-width="180" show-overflow-tooltip>
+            <template #default="scope">{{ scope.row.auditComment || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="提交时间" width="165">
+            <template #default="scope">{{ formatDateTime(scope.row.createTime) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="170" fixed="right">
+            <template #default="scope">
+              <el-button size="small" type="success" v-if="scope.row.status === 0"
+                         @click="auditRequest(scope.row, true)">同意</el-button>
+              <el-button size="small" type="danger" v-if="scope.row.status === 0"
+                         @click="auditRequest(scope.row, false)">驳回</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -193,7 +240,7 @@ const route = useRoute()
  */
 const applyQueryTab = () => {
   const tab = route.query.tab
-  if (typeof tab === 'string' && ['student', 'teacher', 'course', 'log'].includes(tab)) {
+  if (typeof tab === 'string' && ['student', 'teacher', 'course', 'approval', 'log'].includes(tab)) {
     activeTab.value = tab
   }
 }
@@ -306,6 +353,90 @@ const deleteCourse = async (course) => {
   }
 }
 
+/* ------------------------- 审批中心 ------------------------- */
+const approvals = ref([])
+const approvalLoading = ref(false)
+const approvalPending = ref(0)
+const approvalQuery = reactive({ status: null })
+
+/**
+ * 拉审批申请列表。
+ *
+ * <p>status 传 null 表示全部。待审批条数单独取一次 ——
+ * 列表如果正筛选着「已通过」，上面的待办数也该是真实值，不能被筛选带偏。
+ */
+const fetchApprovals = async () => {
+  approvalLoading.value = true
+  try {
+    const params = approvalQuery.status === null || approvalQuery.status === ''
+      ? {}
+      : { status: approvalQuery.status }
+    const res = await request.get('/approval-request/list', { params })
+    approvals.value = res || []
+    const countRes = await request.get('/approval-request/pending-count')
+    approvalPending.value = countRes || 0
+  } catch (e) {
+    console.error(e)
+  } finally {
+    approvalLoading.value = false
+  }
+}
+
+const resetApprovalQuery = () => {
+  approvalQuery.status = null
+  fetchApprovals()
+}
+
+/**
+ * 同意 / 驳回一条申请。
+ *
+ * <p>同意会立即执行申请里描述的动作（删除课程 / 驳回报名），
+ * 所以先把「会发生什么」说清楚再确认 —— 删课程是不可恢复的。
+ */
+const auditRequest = async (requestRow, approved) => {
+  try {
+    let comment = null
+    if (approved) {
+      await ElMessageBox.confirm(
+        requestRow.requestTypeText === '删除课程'
+          ? `同意后将立即删除课程「${requestRow.courseName || ''}」，其资源、报名、成绩与全部作业提交会一并删除，不可恢复。确定同意吗？`
+          : `同意后将驳回「${requestRow.targetDesc || ''}」的报名，并把你下面的说明作为驳回原因展示给学员。确定同意吗？`,
+        '同意申请',
+        { confirmButtonText: '确定同意', cancelButtonText: '取消', type: 'warning' }
+      )
+    } else {
+      const { value } = await ElMessageBox.prompt(
+        '请填写驳回原因，申请人会看到这条说明',
+        '驳回申请',
+        {
+          confirmButtonText: '确定驳回',
+          cancelButtonText: '取消',
+          inputType: 'textarea',
+          inputPlaceholder: '例如：课程仍在开课中，暂不能删除 / 驳回理由不充分',
+          inputValidator: (v) => (v && v.trim() ? true : '驳回原因不能为空'),
+          type: 'warning',
+        }
+      )
+      comment = value.trim()
+    }
+
+    await request.post('/approval-request/audit', {
+      requestId: requestRow.requestId,
+      approved,
+      auditComment: comment,
+    })
+    ElMessage.success(approved ? '已同意并执行' : '已驳回该申请')
+    fetchApprovals()
+    // 同意删除课程会改变课程列表，顺手刷新一次首页数据源
+    if (approved && requestRow.requestTypeText === '删除课程') {
+      fetchCourses()
+    }
+  } catch (e) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e?.message || '审批失败')
+  }
+}
+
 /* ------------------------- 操作日志 ------------------------- */
 const logs = ref([])
 const logTotal = ref(0)
@@ -391,6 +522,8 @@ const formatDateTime = (value) => {
 watch(activeTab, (tab) => {
   if (tab === 'course') {
     fetchCourses()
+  } else if (tab === 'approval') {
+    fetchApprovals()
   } else if (tab === 'log') {
     fetchLogs()
   } else {
@@ -403,6 +536,8 @@ onMounted(() => {
   applyQueryTab()
   fetchUsers()
   fetchCourses()
+  // 待办提醒：审批中心的待处理条数在进页面时就取一次，不等到点开页签
+  fetchApprovals()
 })
 </script>
 
@@ -422,5 +557,10 @@ onMounted(() => {
 
 .error-text {
   color: #f56c6c;
+}
+
+.approval-tip {
+  font-size: 13px;
+  color: #e6a23c;
 }
 </style>

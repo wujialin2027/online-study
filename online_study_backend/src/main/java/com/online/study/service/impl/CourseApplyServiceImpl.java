@@ -1,10 +1,13 @@
 package com.online.study.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.online.study.common.ResultCode;
+import com.online.study.entity.ApprovalRequest;
 import com.online.study.entity.Course;
 import com.online.study.entity.CourseApply;
 import com.online.study.exception.BizException;
+import com.online.study.mapper.ApprovalRequestMapper;
 import com.online.study.mapper.CourseApplyMapper;
 import com.online.study.mapper.CourseMapper;
 import com.online.study.service.CourseApplyService;
@@ -16,7 +19,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.Date;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 报名服务实现
@@ -48,6 +54,45 @@ public class CourseApplyServiceImpl extends ServiceImpl<CourseApplyMapper, Cours
 
     @Autowired
     private CourseMapper courseMapper;
+
+    /**
+     * 注入的是 Mapper 不是 Service。
+     *
+     * <p>{@code ApprovalRequestServiceImpl} 已经依赖了本服务，
+     * 这里若反过来注入 {@code ApprovalRequestService} 就构成 Bean 循环依赖，
+     * Spring Boot 2.6+ 默认直接启动失败。Mapper 只依赖数据库，不存在环。
+     */
+    @Autowired
+    private ApprovalRequestMapper approvalRequestMapper;
+
+    @Override
+    public void fillRejectPending(List<CourseApply> applies) {
+        if (applies == null || applies.isEmpty()) {
+            return;
+        }
+        List<Integer> applyIds = applies.stream()
+                .map(CourseApply::getApplyId)
+                .filter(Objects::nonNull)
+                .toList();
+        if (applyIds.isEmpty()) {
+            return;
+        }
+
+        // 一次查出这一批报名里「待审批的驳回申请」，再回填标记 ——
+        // 逐条查就是 N+1，报名列表动辄几十行。
+        List<ApprovalRequest> pending = approvalRequestMapper.selectList(
+                new QueryWrapper<ApprovalRequest>()
+                        .eq("request_type", ApprovalRequest.TYPE_APPLY_REJECT)
+                        .eq("status", ApprovalRequest.STATUS_PENDING)
+                        .in("target_id", applyIds));
+        Set<Integer> pendingApplyIds = pending.stream()
+                .map(ApprovalRequest::getTargetId)
+                .collect(Collectors.toSet());
+
+        for (CourseApply apply : applies) {
+            apply.setRejectPending(pendingApplyIds.contains(apply.getApplyId()));
+        }
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -90,6 +135,34 @@ public class CourseApplyServiceImpl extends ServiceImpl<CourseApplyMapper, Cours
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void auditApply(Integer applyId, Integer auditStatus, String remark) {
+        // 驳回的直接入口对教师关闭：驳回决定影响学员能否上课，必须先走审批申请。
+        // （撤销驳回 status=0、通过 status=1 仍然可以由教师直接操作。）
+        if (!CurrentUserUtil.isAdmin()
+                && auditStatus != null && auditStatus == STATUS_REJECTED) {
+            throw new BizException(ResultCode.FORBIDDEN,
+                    "驳回报名需要管理员审批，请提交审批申请并填写原因");
+        }
+        doAudit(applyId, auditStatus, remark, CurrentUserUtil.getId(), CurrentUserUtil.isAdmin());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void rejectOnApproval(Integer applyId, String reason, Integer teacherId) {
+        // 管理员已同意审批：审核人固定记为发起申请的教师（audit_teacher_id 有外键指向 teacher 表），
+        // 管理员的动作留在 approval_request 里，两边痕迹都对得上。
+        doAudit(applyId, STATUS_REJECTED, reason, teacherId, true);
+    }
+
+    /**
+     * 审核报名的公共实现。
+     *
+     * @param operatorId       写入 {@code audit_teacher_id} 的人：正常审核时为当前登录人，
+     *                         审批代为执行时为发起申请的教师
+     * @param skipOwnerCheck   是否跳过「只能审核自己发布的课程」校验。
+     *                         管理员本身不受限；审批执行时也跳过（任务书里已校验过归属）
+     */
+    private void doAudit(Integer applyId, Integer auditStatus, String remark,
+                         Integer operatorId, boolean skipOwnerCheck) {
         if (auditStatus == null || auditStatus < STATUS_PENDING || auditStatus > STATUS_REJECTED) {
             throw new BizException("审核结果不合法（只能是 0 待审核 / 1 通过 / 2 驳回）");
         }
@@ -105,7 +178,7 @@ public class CourseApplyServiceImpl extends ServiceImpl<CourseApplyMapper, Cours
         // 越权校验：教师只能审核**自己发布的课程**的报名，管理员不受限。
         // 不加这个检查的话，任何教师拿着别人的 applyId 都能通过/驳回别人的学员 ——
         // 接口上的 @PreAuthorize 只挡住了学员，挡不住"教师 A 审教师 B 的课"。
-        if (!CurrentUserUtil.isAdmin()) {
+        if (!skipOwnerCheck && !CurrentUserUtil.isAdmin()) {
             Course course = courseMapper.selectById(apply.getCourseId());
             if (course == null
                     || !Objects.equals(course.getPublishTeacherId(), CurrentUserUtil.getId())) {
@@ -132,8 +205,7 @@ public class CourseApplyServiceImpl extends ServiceImpl<CourseApplyMapper, Cours
         }
 
         // 条件更新：只有旧状态未变时才生效，避免并发下重复审核
-        int rows = baseMapper.auditIfStatus(applyId, auditStatus, oldStatus,
-                CurrentUserUtil.getId(), remark);
+        int rows = baseMapper.auditIfStatus(applyId, auditStatus, oldStatus, operatorId, remark);
         if (rows == 0) {
             // 抛异常 → 事务回滚 → 上面已做的名额增减一并撤销
             throw new BizException("该报名已被其他操作修改，请刷新后重试");

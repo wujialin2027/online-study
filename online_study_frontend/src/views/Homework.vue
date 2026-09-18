@@ -273,7 +273,10 @@
           </div>
           <div class="subpage-title">
             <div class="subpage-name">{{ activeCourse?.courseName }}</div>
-            <div class="subpage-meta">共 {{ hwTotal }} 项作业 · 可点左侧按钮切换其他课程</div>
+            <div class="subpage-meta">
+              共 {{ hwTotal }} 项作业 · 可点左侧按钮切换其他课程
+              <span v-if="hwStudentCount > 0"> · 在读学员 {{ hwStudentCount }} 人</span>
+            </div>
           </div>
         </div>
         <div class="filter-bar">
@@ -298,8 +301,29 @@
           empty-text="这门课程下还没有作业"
         >
           <el-table-column prop="homeworkName" label="作业名称" min-width="200"></el-table-column>
-          <el-table-column prop="deadline" label="截止时间" min-width="180">
+          <el-table-column prop="deadline" label="截止时间" min-width="170">
             <template #default="scope">{{ formatDate(scope.row.deadline) }}</template>
+          </el-table-column>
+          <!-- 提交情况直接摆在列表行上：原来要点开弹窗、再逐个数才知道谁没交 -->
+          <el-table-column label="提交情况" min-width="200">
+            <template #default="scope">
+              <div class="submit-stats">
+                <span class="submit-count" :class="{ 'is-done': submitStats(scope.row).allSubmitted }">
+                  {{ submitStats(scope.row).submitText }}
+                </span>
+                <el-tag
+                  v-if="submitStats(scope.row).pendingCount > 0"
+                  size="small"
+                  type="warning"
+                >
+                  待批改 {{ submitStats(scope.row).pendingCount }}
+                </el-tag>
+                <el-tag v-else-if="submitStats(scope.row).submitCount > 0" size="small" type="success">
+                  已批改完
+                </el-tag>
+                <el-tag v-else size="small" type="info">无人提交</el-tag>
+              </div>
+            </template>
           </el-table-column>
           <el-table-column label="操作" width="210" fixed="right">
             <template #default="scope">
@@ -429,7 +453,11 @@
           >
             <div class="grade-item-row">
               <span class="grade-item-name">{{ getStudentName(item.studentId) }}</span>
-              <el-tag size="small" :type="item.correctStatus === 1 ? 'success' : 'info'">
+              <!-- 已批改的直接亮出分数：不用一份份点开才知道谁得了多少分 -->
+              <span v-if="item.correctStatus === 1 && item.score !== null && item.score !== undefined" class="grade-item-score">
+                {{ item.score }} 分
+              </span>
+              <el-tag v-else size="small" :type="item.correctStatus === 1 ? 'success' : 'info'">
                 {{ item.correctStatus === 1 ? '已批改' : '待批改' }}
               </el-tag>
             </div>
@@ -555,6 +583,61 @@ const allHomeworks = ref([])
 const submitMap = ref({})
 /** 学员端「我的作业」的状态筛选：'' = 全部 */
 const hwStatusFilter = ref('')
+
+/**
+ * 教师端作业列表的「提交情况」。
+ *
+ * <p>homeworkId → { submitCount, gradedCount, pendingCount }，由
+ * {@code GET /homework-submit/course-stats?courseId=x} 一次性取回整门课的统计。
+ * 不在前端逐份作业去查提交记录 —— 那就是把 N+1 从服务端搬到浏览器。
+ */
+const hwStatsMap = ref({})
+/** 在读学员数（已通过审核的报名人数），即「应交作业」的分母 */
+const hwStudentCount = ref(0)
+
+/**
+ * 把统计结果算成列表上要显示的一行。
+ *
+ * @param row 作业行
+ * @return { submitText, submitCount, pendingCount, allSubmitted }
+ */
+const submitStats = (row) => {
+  const item = hwStatsMap.value[row.homeworkId]
+  const submitCount = item?.submitCount || 0
+  const pendingCount = item?.pendingCount || 0
+  const studentCount = hwStudentCount.value
+  return {
+    submitCount,
+    pendingCount,
+    submitText: `已交 ${submitCount}/${studentCount}`,
+    // 全员交齐才标绿：没交齐的保持默认色，教师扫一眼就知道哪几份还差人
+    allSubmitted: studentCount > 0 && submitCount >= studentCount
+  }
+}
+
+/** 拉取当前课程的作业提交统计（教师 / 管理员） */
+const loadHwStats = async () => {
+  if (!activeCourse.value?.courseId || role.value === 'student') {
+    hwStatsMap.value = {}
+    hwStudentCount.value = 0
+    return
+  }
+  try {
+    const res = await request.get('/homework-submit/course-stats', {
+      params: { courseId: activeCourse.value.courseId }
+    })
+    hwStudentCount.value = res?.studentCount || 0
+    hwStatsMap.value = (res?.items || []).reduce((acc, item) => {
+      acc[item.homeworkId] = item
+      return acc
+    }, {})
+  } catch (e) {
+    // 统计拿不到不该挡住作业列表本身，退化成「已交 0/0」而不是整页报错
+    console.error(e)
+    hwStatsMap.value = {}
+    hwStudentCount.value = 0
+  }
+}
 
 // ==================== 我的成绩（两级） ====================
 /**
@@ -976,6 +1059,8 @@ const fetchHomework = async () => {
     const res = await request.post('/homework/page', params)
     homeworkList.value = res?.records || []
     hwTotal.value = res?.total || 0
+    // 统计与列表并行拉，互不阻塞；统计失败也不影响列表显示
+    loadHwStats()
   } catch (e) {
     console.error(e)
   } finally {
@@ -1176,24 +1261,18 @@ const isPdfFile = (url) => /\.pdf$/i.test(url || '')
 /** 从附件地址里取文件名，显示在下载按钮旁边 */
 const fileNameOf = (url) => (url || '').split('/').pop()
 
-/** 选中一份提交，并把已打过的分数 / 评语回填到表单 */
-const selectSubmit = async (record) => {
+/**
+ * 选中一份提交，并把已打过的分数 / 评语回填到表单。
+ *
+ * 分数存在 homework_submit 自己身上（score / score_comment，/grade 接口写的就是这两列），
+ * 列表接口返回的就是完整的提交记录，直接回填即可 ——
+ * 旧代码在这里去查 score 表（学员 × 课程一行的「课程总评」），查的是另一张表：
+ * 已批改的提交打开后分数框是空的，看起来像"标记了已批改却没打分"。
+ */
+const selectSubmit = (record) => {
   currentSubmit.value = record
-  gradeForm.score = null
-  gradeForm.comment = ''
-  try {
-    const res = await request.post('/score/query', {
-      studentId: record.studentId,
-      courseId: currentHomework.value.courseId
-    })
-    const exist = res && res.length > 0 ? res[0] : null
-    if (exist) {
-      gradeForm.score = exist.homeworkScore ?? exist.totalScore ?? null
-      gradeForm.comment = exist.scoreComment || ''
-    }
-  } catch (e) {
-    console.error(e)
-  }
+  gradeForm.score = record.score ?? null
+  gradeForm.comment = record.scoreComment || ''
 }
 
 /** 跳到下一份未批改的提交，支持连续批改 */
@@ -1280,6 +1359,8 @@ const doGrade = async () => {
     if (refreshed) {
       currentSubmit.value = refreshed
     }
+    // 列表行上的「待批改 N」要跟着变，否则刚批完还显示待批改，看着像没保存成功
+    loadHwStats()
     fetchCourseScores()
   } catch (e) {
     console.error(e)
@@ -1305,6 +1386,27 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* ==================== 作业列表：提交情况 ==================== */
+
+/* 「已交 2/3」+ 状态标签排成一行，列宽够时不会换行 */
+.submit-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.submit-count {
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+}
+
+/* 全员交齐：整行数字标绿，教师一眼扫出哪几份作业还有人没交 */
+.submit-count.is-done {
+  color: #67c23a;
+  font-weight: 600;
+}
+
 /* ==================== 批改面板 ==================== */
 
 /* 顶部作业信息：批改时不必退出去翻题目和截止时间 */
@@ -1389,6 +1491,12 @@ onMounted(async () => {
 .grade-item-name {
   font-size: 13px;
   color: var(--el-text-color-primary);
+}
+
+.grade-item-score {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-color-success);
 }
 
 .grade-item-sub {

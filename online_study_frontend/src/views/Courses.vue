@@ -51,9 +51,7 @@
           <el-table-column prop="trainCycle" label="培训周期"></el-table-column>
           <el-table-column label="报名状态" width="110">
             <template #default="scope">
-              <el-tag :type="scope.row.applyStatus === 1 ? 'success' : (scope.row.applyStatus === 2 ? 'danger' : 'warning')">
-                {{ scope.row.applyStatus === 1 ? '已通过' : (scope.row.applyStatus === 2 ? '已驳回' : '待审核') }}
-              </el-tag>
+              <el-tag :type="enrollStatusTagType(scope.row)">{{ enrollStatusText(scope.row) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="applyRemark" label="审核意见" show-overflow-tooltip>
@@ -90,6 +88,10 @@
           <el-button type="primary" @click="searchCourses">搜索</el-button>
           <el-button @click="resetCourseSearch">重置</el-button>
           <div class="spacer"></div>
+          <!-- 删除课程、驳回报名都要管理员点头，所以给教师一个回看申请进度的地方 -->
+          <el-button type="warning" plain @click="openMyRequests">
+            我的审批申请{{ pendingRequestCount > 0 ? '（待审批 ' + pendingRequestCount + '）' : '' }}
+          </el-button>
           <el-button type="success" @click="showAddDialog = true">发布新课程</el-button>
         </div>
         <el-table :data="courses" v-loading="courseLoading" style="width: 100%">
@@ -110,7 +112,8 @@
             <template #default="scope">
               <el-button size="small" @click="viewResources(scope.row)">管理资源</el-button>
               <el-button size="small" type="info" @click="viewStudents(scope.row)">查看学员</el-button>
-              <el-button size="small" type="danger" @click="deleteCourse(scope.row)">删除</el-button>
+              <!-- 删除是不可恢复的级联操作，教师只能「申请」——管理员同意后才真正执行 -->
+              <el-button size="small" type="danger" @click="applyDeleteCourse(scope.row)">申请删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -182,11 +185,9 @@
           <el-table-column prop="applyTime" label="申请时间" min-width="170">
             <template #default="scope">{{ formatDate(scope.row.applyTime) }}</template>
           </el-table-column>
-          <el-table-column prop="auditStatus" label="状态" width="100">
+          <el-table-column prop="auditStatus" label="状态" width="110">
             <template #default="scope">
-              <el-tag :type="scope.row.auditStatus === 1 ? 'success' : (scope.row.auditStatus === 2 ? 'danger' : 'info')">
-                {{ scope.row.auditStatus === 1 ? '已通过' : (scope.row.auditStatus === 2 ? '已驳回' : '待审核') }}
-              </el-tag>
+              <el-tag :type="auditStatusTagType(scope.row)">{{ auditStatusText(scope.row) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="auditRemark" label="审核意见" min-width="140" show-overflow-tooltip>
@@ -195,7 +196,21 @@
           <el-table-column label="操作" width="190" fixed="right">
             <template #default="scope">
               <el-button size="small" type="success" v-if="scope.row.auditStatus === 0" @click="auditApply(scope.row, 1)">通过</el-button>
-              <el-button size="small" type="danger" v-if="scope.row.auditStatus === 0" @click="auditApply(scope.row, 2)">驳回</el-button>
+              <!-- 驳回影响学员能否上课，教师只能提交申请，管理员同意后才驳回；
+                   申请已提交（rejectPending）时隐藏按钮并提示，避免教师以为没提交成功而反复点 -->
+              <el-button
+                size="small"
+                type="danger"
+                v-if="scope.row.auditStatus === 0 && !scope.row.rejectPending"
+                @click="applyRejectApply(scope.row)"
+              >驳回</el-button>
+              <el-tooltip
+                v-if="scope.row.rejectPending"
+                content="驳回申请已提交，等待管理员审批"
+                placement="top"
+              >
+                <el-button size="small" disabled>驳回审批中</el-button>
+              </el-tooltip>
               <el-button size="small" type="warning" v-if="scope.row.auditStatus === 2" @click="auditApply(scope.row, 0)">撤回驳回</el-button>
             </template>
           </el-table-column>
@@ -406,6 +421,28 @@
         <el-table-column prop="studentPhone" label="联系电话"></el-table-column>
       </el-table>
     </el-dialog>
+
+    <!-- 教师的审批申请进度：删课程 / 驳回报名都提交到这里，管理员给了结果教师自己能看到 -->
+    <el-dialog v-model="showRequestsDialog" title="我的审批申请" width="900px">
+      <el-table :data="myRequests" v-loading="requestLoading" empty-text="还没有提交过审批申请">
+        <el-table-column prop="requestTypeText" label="类型" width="95" />
+        <el-table-column prop="targetDesc" label="申请对象" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="reason" label="申请理由" min-width="180" show-overflow-tooltip />
+        <el-table-column label="状态" width="95">
+          <template #default="scope">
+            <el-tag :type="scope.row.status === 1 ? 'success' : (scope.row.status === 2 ? 'danger' : 'info')">
+              {{ scope.row.statusText }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="审批意见" min-width="180" show-overflow-tooltip>
+          <template #default="scope">{{ scope.row.auditComment || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="提交时间" width="165">
+          <template #default="scope">{{ formatDate(scope.row.createTime) }}</template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
@@ -576,10 +613,49 @@ const fetchEnrolledCourses = async () => {
         applyStatus: a.auditStatus,
         applyRemark: a.auditRemark,
         applyTime: a.applyTime,
+        // 教师已提交驳回申请、正等管理员审批 —— 学员也该看到进度，否则一直显示「待审核」
+        rejectPending: a.rejectPending
       }))
   } catch (e) {
     console.error(e)
   }
+}
+
+/**
+ * 报名状态的展示文案与配色。
+ *
+ * <p>「驳回审批中」是一个<b>派生状态</b>：报名本身仍然是「待审核」
+ * （audit_status = 0），只是教师已经提交了驳回申请、还等管理员签字。
+ * 如果只显示「待审核」，教师会以为申请没提交成功而反复点驳回，
+ * 学员也会以为自己被晾着 —— 所以两个端都把它显式显示出来。
+ */
+const auditStatusText = (row) => {
+  if (row.rejectPending) return '驳回审批中'
+  if (row.auditStatus === 1) return '已通过'
+  if (row.auditStatus === 2) return '已驳回'
+  return '待审核'
+}
+
+const auditStatusTagType = (row) => {
+  if (row.rejectPending) return 'warning'
+  if (row.auditStatus === 1) return 'success'
+  if (row.auditStatus === 2) return 'danger'
+  return 'info'
+}
+
+/** 学员端「我已报名的课程」用的是合并后的 applyStatus 字段 */
+const enrollStatusText = (row) => {
+  if (row.rejectPending) return '驳回审批中'
+  if (row.applyStatus === 1) return '已通过'
+  if (row.applyStatus === 2) return '已驳回'
+  return '待审核'
+}
+
+const enrollStatusTagType = (row) => {
+  if (row.rejectPending) return 'warning'
+  if (row.applyStatus === 1) return 'success'
+  if (row.applyStatus === 2) return 'danger'
+  return 'warning'
 }
 
 const fetchApplies = async () => {
@@ -695,33 +771,16 @@ const handleTabChange = () => {
 
 const auditApply = async (apply, status) => {
   try {
-    // 驳回必须填写原因：服务端强校验，并会同步释放该课程占用的名额，
-    // 学员端也能看到这条原因，避免反复提交。
-    let remark = null
-    if (status === 2) {
-      const { value } = await ElMessageBox.prompt('请填写驳回原因，学员端将看到这条说明', '驳回报名', {
-        confirmButtonText: '确定驳回',
-        cancelButtonText: '取消',
-        inputPlaceholder: '例如：不符合报名条件 / 该课程名额已满',
-        inputValidator: (v) => (v && v.trim() ? true : '驳回原因不能为空'),
-        type: 'warning',
-      })
-      remark = value.trim()
-    }
-
-    // 审核走专用接口：审核人由服务端从 JWT 取，不再由前端传 teacherId；
-    // 同时服务端会处理「驳回释放名额 / 撤销驳回重新抢名额」
+    // 只处理「通过(1)」与「撤回驳回(0)」。
+    // 驳回(2) 走 applyRejectApply 提交审批申请 —— 服务端也会拒绝教师的直接驳回请求。
     await request.post('/course-apply/audit', {
       applyId: apply.applyId,
       auditStatus: status,
-      auditRemark: remark,
+      auditRemark: status === 0 ? '恢复为待审核，重新排队' : null,
     })
-    ElMessage.success(
-      status === 1 ? '报名已通过' : (status === 2 ? '报名已驳回' : '已撤回驳回，报名恢复为待审核')
-    )
+    ElMessage.success(status === 1 ? '报名已通过' : '已撤回驳回，报名恢复为待审核')
     fetchApplies()
   } catch (e) {
-    if (e === 'cancel' || e === 'close') return
     // 例如「课程名额已满，无法恢复该报名」
     ElMessage.error(e?.message || '审核失败')
   }
@@ -762,20 +821,103 @@ const applyCourse = async (course) => {
   }
 }
 
-const deleteCourse = async (course) => {
+/**
+ * 教师申请删除课程。
+ *
+ * <p>「删除课程」会级联清掉资源、报名、成绩、作业与全部提交记录，不可恢复，
+ * 所以教师端只提交<b>申请</b>：服务端会拒绝对 /course/{id} 的教师删除请求，
+ * 真正执行发生在管理员于「系统管理 → 审批中心」点同意的那一刻。
+ * 理由必填 —— 管理员得知道为什么要删。
+ */
+const applyDeleteCourse = async (course) => {
   try {
-    await ElMessageBox.confirm('确定要删除该课程吗？相关资源、报名和作业信息也将被删除。此操作不可恢复。', '警告', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
+    const { value } = await ElMessageBox.prompt(
+      '删除课程会连带删除课程资源、报名记录、成绩以及全部作业提交，且不可恢复。\n请填写申请理由，管理员同意后才会执行删除。',
+      '申请删除课程',
+      {
+        confirmButtonText: '提交申请',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '例如：课程内容已并入另一门课 / 课程结课不再开设',
+        inputValidator: (v) => (v && v.trim() ? true : '申请理由不能为空'),
+        type: 'warning',
+      }
+    )
+    await request.post('/approval-request/submit', {
+      requestType: 'COURSE_DELETE',
+      targetId: course.courseId,
+      reason: value.trim(),
     })
-    await request.delete(`/course/${course.courseId}`)
-    ElMessage.success('课程删除成功')
-    fetchCourses()
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error('删除课程失败')
-    }
+    ElMessage.success('删除申请已提交，等待管理员审批')
+    fetchMyRequests()
+  } catch (e) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e?.message || '提交申请失败')
+  }
+}
+
+/**
+ * 教师申请驳回报名。
+ *
+ * <p>驳回直接决定学员能不能上这门课，所以同样要先申请。
+ * 这里填的理由有两个去处：管理员据此判断是否同意；
+ * 同意后它会作为驳回原因写入报名记录，学员端能看到。
+ */
+const applyRejectApply = async (apply) => {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `驳回 ${apply.studentName || '该学员'} 的报名需要管理员审批。\n请填写驳回理由，理由会同步展示给学员。`,
+      '申请驳回报名',
+      {
+        confirmButtonText: '提交申请',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '例如：不符合报名条件 / 未提交前置作业',
+        inputValidator: (v) => (v && v.trim() ? true : '驳回理由不能为空'),
+        type: 'warning',
+      }
+    )
+    await request.post('/approval-request/submit', {
+      requestType: 'APPLY_REJECT',
+      targetId: apply.applyId,
+      reason: value.trim(),
+    })
+    ElMessage.success('驳回申请已提交，等待管理员审批')
+    // 刷新报名列表：这一行的状态要变成「驳回审批中」，驳回按钮也要收起来
+    fetchApplies()
+    fetchMyRequests()
+  } catch (e) {
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e?.message || '提交申请失败')
+  }
+}
+
+/* ------------------------- 我的审批申请 ------------------------- */
+const showRequestsDialog = ref(false)
+const requestLoading = ref(false)
+const myRequests = ref([])
+/** 待审批条数，直接显示在按钮上，省得教师反复点开看 */
+const pendingRequestCount = ref(0)
+
+const fetchMyRequests = async () => {
+  // 只在教师端有意义（管理员在系统管理里看全部申请）
+  if (role.value !== 'teacher') return
+  try {
+    const res = await request.get('/approval-request/list')
+    myRequests.value = res || []
+    pendingRequestCount.value = myRequests.value.filter((r) => r.status === 0).length
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+const openMyRequests = async () => {
+  showRequestsDialog.value = true
+  requestLoading.value = true
+  try {
+    await fetchMyRequests()
+  } finally {
+    requestLoading.value = false
   }
 }
 
@@ -886,15 +1028,46 @@ const togglePreview = async (resource) => {
 
   previewLoading.value = true
   try {
-    const blob = await fetchResourceBlob(resource)
+    // inline=true：让服务端用真实 MIME（application/pdf、image/png…）+ inline 返回。
+    // 拿到的 Blob 类型决定了 iframe 能不能渲染 —— 类型是 octet-stream 的话
+    // 浏览器只会把它当"要下载的东西"，预览区就是一片空白 + 多一条下载记录。
+    const blob = await fetchResourceBlob(resource, true)
     if (blob) {
-      previewUrl.value = window.URL.createObjectURL(blob)
+      previewUrl.value = window.URL.createObjectURL(withPreviewMime(blob, resource))
     } else {
       previewRes.value = null
     }
   } finally {
     previewLoading.value = false
   }
+}
+
+/** 按扩展名推断预览用的 MIME；认不出返回空串 */
+const mimeForPreview = (resource) => {
+  const path = String(resource?.resourcePath || '').toLowerCase()
+  if (path.endsWith('.pdf')) return 'application/pdf'
+  if (path.endsWith('.png')) return 'image/png'
+  if (/\.jpe?g$/.test(path)) return 'image/jpeg'
+  if (path.endsWith('.gif')) return 'image/gif'
+  if (path.endsWith('.webp')) return 'image/webp'
+  if (path.endsWith('.bmp')) return 'image/bmp'
+  if (path.endsWith('.mp4')) return 'video/mp4'
+  if (path.endsWith('.webm')) return 'video/webm'
+  return ''
+}
+
+/**
+ * 兜底修正 Blob 的 MIME 类型。
+ *
+ * <p>正常情况下服务端已经给了正确的 Content-Type；但只要有任意一层（反向代理、
+ * 开发服务器）改写了响应头，octet-stream 又会回来，预览就再次失灵。
+ * 这里按扩展名再包一层，成本几乎为零，换来的是预览不再依赖传输链路。
+ */
+const withPreviewMime = (blob, resource) => {
+  // 服务端给了可信类型（非 octet-stream）就不动它
+  if (blob.type && blob.type !== 'application/octet-stream') return blob
+  const mime = mimeForPreview(resource)
+  return mime ? new Blob([blob], { type: mime }) : blob
 }
 
 const openExternal = (resource) => {
@@ -923,12 +1096,17 @@ const openExternal = (resource) => {
  * 返回的仍是 HTTP 200 + JSON（项目的统一约定），必须识别出来，
  * 否则会把一段错误 JSON 原样当成文件存到本地。
  *
+ * @param inline true 表示"这是预览"：请求头会带上 inline=1，
+ *               服务端改用真实的 MIME 类型 + Content-Disposition: inline 返回。
+ *               不传这个参数，浏览器拿到的是 octet-stream，iframe 渲染不了，
+ *               表现就是"点预览却开始下载"。
  * @return 成功返回 Blob；失败返回 null（提示已在内部弹出）
  */
-const fetchResourceBlob = async (resource) => {
+const fetchResourceBlob = async (resource, inline = false) => {
   try {
     const blob = await request.get(`/course-resource/${resource.resourceId}/download`, {
-      responseType: 'blob'
+      responseType: 'blob',
+      params: inline ? { inline: true } : undefined
     })
     if (blob?.type && blob.type.includes('json')) {
       const text = await blob.text()
@@ -1071,6 +1249,8 @@ onMounted(() => {
   fetchCourses()
   if (role.value === 'teacher') {
     fetchApplies()
+    // 顺带把「我的审批申请」待办数取回来，按钮上直接显示还有几条在等管理员
+    fetchMyRequests()
   } else if (role.value === 'student') {
     fetchEnrolledCourses()
   }

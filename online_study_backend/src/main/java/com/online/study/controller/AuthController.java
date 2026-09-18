@@ -11,6 +11,7 @@ import com.online.study.service.StudentService;
 import com.online.study.service.TeacherService;
 import com.online.study.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
@@ -49,6 +50,15 @@ public class AuthController {
 
     @Autowired
     private JwtUtils jwtUtils;
+
+    /**
+     * 自助注册开关，默认开放。
+     * <p>部署到公网做演示时，在服务器的配置里设 {@code app.register-enabled: false}
+     * 关闭自助注册 —— 演示密码写在公开的 README 里，任何人都能登录演示环境，
+     * 关注册可以防止陌生人灌垃圾数据；新账号由管理员/教师在库内开通。
+     */
+    @Value("${app.register-enabled:true}")
+    private boolean registerEnabled;
 
     /**
      * 登录。成功时 data 形如：
@@ -122,6 +132,12 @@ public class AuthController {
         String name = params.get("name");
         String phone = params.get("phone");
         String role = params.get("role");
+
+        // 部署到公网后的防灌水开关：关闭后前端注册页会收到明确提示（服务端兜底，
+        // 前端只是隐藏入口 —— 接口层必须自己挡，这是「不信任前端」原则的一部分）
+        if (!registerEnabled) {
+            return Result.failure("系统已关闭自助注册，请联系管理员开通账号");
+        }
 
         if (!StringUtils.hasText(account) || !StringUtils.hasText(password)
                 || !StringUtils.hasText(name) || !StringUtils.hasText(phone)) {

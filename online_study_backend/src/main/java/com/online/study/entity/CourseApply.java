@@ -1,6 +1,7 @@
 package com.online.study.entity;
 
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -53,4 +54,19 @@ public class CourseApply {
 
     /** 审核意见 / 驳回原因（审核时提交） */
     private String auditRemark;
+
+    /**
+     * 这条报名是否有「驳回申请」正等着管理员审批（<b>非数据库字段</b>）。
+     *
+     * <p>为什么不给 {@code audit_status} 再加一个「3 驳回审批中」的取值：
+     * 那个字段的 0/1/2 同时被名额口径依赖（0 和 1 占名额、2 不占），
+     * 直接塞第三个值进去，所有 {@code audit_status = 2} 的判断都要回头再审一遍，
+     * 很容易漏掉一处就让名额算错。
+     *
+     * <p>所以「审批中」作为派生状态存在：查列表时顺带看一眼
+     * {@code approval_request} 里有没有对应的待审批记录。
+     * 状态唯一来源仍然是 {@code audit_status}，名额口径完全不受影响。
+     */
+    @TableField(exist = false)
+    private Boolean rejectPending;
 }

@@ -22,7 +22,9 @@ import com.online.study.common.PageResult;
 import com.online.study.common.Result;
 import com.online.study.common.ResultCode;
 import com.online.study.exception.BizException;
+import com.online.study.vo.HomeworkSubmitStatsVO;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 /**
  * 作业提交接口
@@ -167,6 +169,20 @@ public class HomeworkSubmitController {
         recalcCourseScore(submit.getStudentId(), homework.getCourseId(), comment);
 
         return Result.success("批改已保存", submit);
+    }
+
+    /**
+     * 某门课程的作业提交统计（教师 / 管理员）。
+     *
+     * <p>给作业列表用：一次请求拿到「在读学员数 + 每份作业的已交 / 已批改 / 待批改」，
+     * 教师不必点开每一份作业才知道谁没交。
+     *
+     * <p>请求示例：{@code GET /homework-submit/course-stats?courseId=47}
+     */
+    @GetMapping("/course-stats")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
+    public Result<HomeworkSubmitStatsVO> courseStats(@RequestParam(name = "courseId") Integer courseId) {
+        return Result.success(service.courseStats(courseId));
     }
 
     @DeleteMapping("/{id}")

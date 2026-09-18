@@ -1,5 +1,6 @@
 package com.online.study.utils;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -152,14 +153,29 @@ public final class QueryUtil {
         return wrapper;
     }
 
-    /** 反射收集实体类所有实例字段，转成数据库列名集合 */
+    /**
+     * 反射收集实体类所有实例字段，转成数据库列名集合。
+     *
+     * <p>标记了 {@code @TableField(exist = false)} 的字段要排除掉 ——
+     * 它们在数据库里根本没有对应的列，是实体上用来承载派生数据的
+     * （例如 {@code CourseApply.rejectPending}：由审批表算出来，不是 course_apply 的列）。
+     * 不排除的话，白名单里就会多出一个并不存在的列名，
+     * 一旦前端传了这个 key，拼出来的 SQL 会直接报「Unknown column」。
+     */
     private static Set<String> resolveColumns(Class<?> entityClass) {
         return Arrays.stream(entityClass.getDeclaredFields())
                 .filter(field -> !Modifier.isStatic(field.getModifiers()))
                 .filter(field -> !field.isSynthetic())
+                .filter(field -> !isNotAColumn(field))
                 .map(Field::getName)
                 .map(QueryUtil::camelToUnderline)
                 .collect(Collectors.toSet());
+    }
+
+    /** 是否为「实体上存在、数据库里没有」的字段（{@code @TableField(exist = false)}） */
+    private static boolean isNotAColumn(Field field) {
+        TableField annotation = field.getAnnotation(TableField.class);
+        return annotation != null && !annotation.exist();
     }
 
     /** 驼峰转下划线：{@code courseName} → {@code course_name} */

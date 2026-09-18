@@ -3,6 +3,8 @@ package com.online.study.service;
 import com.online.study.entity.CourseApply;
 import com.baomidou.mybatisplus.extension.service.IService;
 
+import java.util.List;
+
 /**
  * 报名服务
  *
@@ -39,9 +41,41 @@ public interface CourseApplyService extends IService<CourseApply> {
     void auditApply(Integer applyId, Integer auditStatus, String remark);
 
     /**
+     * 管理员审批通过后，代为执行「驳回报名」。
+     *
+     * <p>为什么要单独一个方法，而不是让审批流直接调 {@link #auditApply}：
+     * {@code course_apply.audit_teacher_id} 上有指向 {@code teacher} 表的外键，
+     * 而当前登录人是<b>管理员</b>（ID 在 admin 表里）。直接调 auditApply 会在
+     * 这个字段里写入管理员 ID —— 轻则外键报错，重则写进去一个"长得像教师 ID"的
+     * 数字，把审核痕迹记到某个无辜教师头上。
+     *
+     * <p>所以驳回动作的审核人固定记为<b>发起申请的教师</b>，
+     * 管理员的动作留在 {@code approval_request} 的 {@code auditor_id} 上，两边都对得上。
+     *
+     * @param applyId   报名记录 ID
+     * @param reason    驳回原因（教师申请时填写，学员端会看到）
+     * @param teacherId 发起申请的教师 ID，写入 audit_teacher_id
+     */
+    void rejectOnApproval(Integer applyId, String reason, Integer teacherId);
+
+    /**
      * 撤销报名（学员撤自己的；管理员可撤任意一条），并释放名额。
      *
      * @param applyId 报名记录 ID
      */
     void cancelApply(Integer applyId);
+
+    /**
+     * 给报名列表补齐「驳回审批中」标记（派生状态，非数据库字段）。
+     *
+     * <p>教师提交驳回申请后，报名记录的 {@code audit_status} 仍然是「待审核」——
+     * 因为它确实还没被驳回，只是有一张单子在等管理员签字。列表上如果只显示「待审核」，
+     * 教师会以为自己的申请没提交成功，反复点驳回。
+     *
+     * <p>所以这里顺带查一次 {@code approval_request}：有待审批的驳回申请就把
+     * {@code rejectPending} 标成 true，页面显示「驳回审批中」并禁用驳回按钮。
+     *
+     * @param applies 待补齐的报名列表（原地修改）
+     */
+    void fillRejectPending(List<CourseApply> applies);
 }

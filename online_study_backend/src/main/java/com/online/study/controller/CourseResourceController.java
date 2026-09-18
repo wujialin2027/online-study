@@ -91,7 +91,7 @@ public class CourseResourceController {
     }
 
     /**
-     * 下载课件（带鉴权）。
+     * 下载 / 预览课件（带鉴权）。
      *
      * <h3>为什么不直接让浏览器打开 /uploads/xxx.pdf</h3>
      * {@code /uploads/**} 在 SecurityConfig 里是 {@code permitAll} 的 —— 这是没办法的事：
@@ -109,12 +109,24 @@ public class CourseResourceController {
      *   <li>下载动作能被服务端感知，将来要做下载次数统计、审计日志都从这里接。</li>
      * </ol>
      *
+     * <h3>inline 参数：预览和下载必须用不同的响应头</h3>
+     * {@code inline=false}（默认，下载）：{@code application/octet-stream} +
+     * {@code Content-Disposition: attachment} —— 浏览器只会在"下载记录"里落一条，不会打开它。
+     *
+     * <p>{@code inline=true}（预览）：必须换成**真实的 MIME 类型** +
+     * {@code Content-Disposition: inline}。少了这一步会踩一个很隐蔽的坑：
+     * 前端把响应包成 Blob 塞进 {@code iframe}，而 Blob 的类型直接来自响应头，
+     * {@code octet-stream} 在浏览器眼里是"未知二进制"，iframe 渲染不了，
+     * 于是点「预览」的表现和点「下载」一模一样（还多了一条下载记录）。
+     *
      * <p>注意返回的是二进制流，不能用统一的 {@code Result<T>} 包装；
      * 但**业务失败仍然遵守项目约定**（HTTP 200 + JSON），前端据此区分
      * "这是一段错误 JSON" 还是 "这是真的文件"。
      */
     @GetMapping("/{resourceId}/download")
-    public ResponseEntity<byte[]> download(@PathVariable Integer resourceId) throws IOException {
+    public ResponseEntity<byte[]> download(@PathVariable Integer resourceId,
+                                          @RequestParam(name = "inline", defaultValue = "false") boolean inline)
+            throws IOException {
         CourseResource resource = service.getById(resourceId);
         if (resource == null) {
             throw new BizException(ResultCode.DATA_NOT_FOUND, "资源不存在或已被删除");
@@ -144,13 +156,44 @@ public class CourseResourceController {
         String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
 
         HttpHeaders headers = new HttpHeaders();
-        // 统一用 octet-stream：避免浏览器把 pdf / 图片直接内嵌打开，
-        // 「下载」按钮就该是下载，想预览有单独的「预览」按钮
-        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
         headers.setContentLength(bytes.length);
-        headers.set(HttpHeaders.CONTENT_DISPOSITION,
-                "attachment; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded);
+        if (inline) {
+            // 预览：真实 MIME + inline，浏览器才会就地渲染而不是下载
+            headers.setContentType(contentTypeOf(target));
+            headers.set(HttpHeaders.CONTENT_DISPOSITION,
+                    "inline; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded);
+        } else {
+            // 下载：统一走 octet-stream，避免浏览器把 pdf / 图片直接内嵌打开
+            headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+            headers.set(HttpHeaders.CONTENT_DISPOSITION,
+                    "attachment; filename=\"" + encoded + "\"; filename*=UTF-8''" + encoded);
+        }
         return new ResponseEntity<>(bytes, headers, HttpStatus.OK);
+    }
+
+    /**
+     * 按物理文件的扩展名推断 MIME 类型，仅用于「预览」。
+     *
+     * <p>不做嗅探（读文件头判断），因为能上传的扩展名本来就被
+     * {@code FileController} 的白名单限死了，扩展名可信；多读一次文件头没必要。
+     * 认不出的类型退回 {@code octet-stream}，前端会走"不支持预览"的提示分支。
+     */
+    private MediaType contentTypeOf(Path target) {
+        String name = target.getFileName().toString().toLowerCase();
+        int dot = name.lastIndexOf('.');
+        String ext = dot < 0 ? "" : name.substring(dot);
+        return switch (ext) {
+            case ".pdf" -> MediaType.APPLICATION_PDF;
+            case ".png" -> MediaType.IMAGE_PNG;
+            case ".jpg", ".jpeg" -> MediaType.IMAGE_JPEG;
+            case ".gif" -> MediaType.IMAGE_GIF;
+            case ".webp" -> MediaType.parseMediaType("image/webp");
+            case ".bmp" -> MediaType.parseMediaType("image/bmp");
+            case ".mp4" -> MediaType.parseMediaType("video/mp4");
+            case ".webm" -> MediaType.parseMediaType("video/webm");
+            case ".txt", ".md", ".csv" -> new MediaType("text", "plain", StandardCharsets.UTF_8);
+            default -> MediaType.APPLICATION_OCTET_STREAM;
+        };
     }
 
     /**
