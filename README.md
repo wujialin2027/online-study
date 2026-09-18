@@ -1,19 +1,26 @@
 # 在线学习平台（Online Study Platform）
 
 > 面向 **学员 / 教师 / 管理员** 三种角色的在线学习平台，前后端分离。
-> 后端 Spring Boot 3.3.5 + MyBatis-Plus + MySQL 8，前端 Vue 3 + Vite 5 + Element Plus。
+> 后端 Spring Boot 3.3.5 + MyBatis-Plus + MySQL 8，前端 Vue 3 + Vite 5 + Element Plus，
+> 内置**自研 RAG 智能助教**（不依赖任何 AI 框架，手工实现检索增强生成与 Function Calling 全链路）。
+
+> 本项目早期为课程设计水平，当前处于持续改造升级中：升级 Spring Boot 3 / Java 21，
+> 重构安全、成绩、论坛等模块，并新增 AI 智能助教。
 
 ---
 
-## 项目简介
+## 功能总览
 
-平台围绕「课程」这一核心业务展开，覆盖 **课程管理 → 课程资源 → 报名 → 作业提交与批改 → 成绩 → 论坛交流** 的完整教学闭环，并提供数据概览看板。
-
-| 角色 | 能做什么 |
+| 模块 | 说明 |
 |---|---|
-| **学员** | 浏览与报名课程、下载课程资源、提交作业、查看成绩、参与论坛 |
-| **教师** | 发布与维护课程、上传课程资源、发布作业、批改作业与录入成绩、参与论坛 |
-| **管理员** | 用户管理、课程审核、全局数据概览 |
+| 角色与权限 | 学员 / 教师 / 管理员三种角色，JWT 无状态认证，接口级鉴权 |
+| 课程 | 教师发布课程、管理员审核、学员报名（人数上限、审核状态流转） |
+| 课程资源 | 教师上传课件；学员**鉴权下载与在线预览**（PDF/图片/视频内嵌，防路径穿越） |
+| 作业 | 教师按课程发布作业、在线批改评分；学员提交、查看成绩与评语 |
+| 成绩 | 分数落在每次提交记录上，按课程聚合展示（已批改次数/平均分/待批改），未批改不计入平均 |
+| 论坛 | 发帖/回复/点赞/收藏、限时编辑（30 分钟，服务端判定）、我的收藏/我的发帖、独立发帖页 |
+| 智能助教 | RAG 知识库问答 + Function Calling 查询业务数据，按角色裁剪答案与工具 |
+| 系统 | 操作日志注解、全局异常处理、统一返回结构 |
 
 ---
 
@@ -23,7 +30,8 @@
 |---|---|
 | **后端** | Java 21、Spring Boot 3.3.5、Spring Security 6、MyBatis-Plus 3.5.7、JJWT 0.12 |
 | **数据库** | MySQL 8 |
-| **前端** | Vue 3、Vite 5、Element Plus、Axios、ECharts |
+| **前端** | Vue 3（组合式 API）、Vite 5、Element Plus、Axios、ECharts 5 |
+| **AI** | 百炼 OpenAI 兼容端点（对话 deepseek-v4.1-flash / 向量 text-embedding-v4）、自研内存向量库 |
 
 ---
 
@@ -32,20 +40,24 @@
 ### 1. 环境要求
 
 ```
-JDK 21
-Maven 3.8+
-Node.js 18+
-MySQL 8.0
+JDK 21、Maven 3.8+、Node.js 18+、MySQL 8.0
+可选：百炼平台 API Key（使用智能助教时需要）
 ```
 
 ### 2. 初始化数据库
 
+按顺序执行（顺序不能乱）：
+
 ```bash
-mysql -uroot -p < init.sql
+mysql -uroot -p < init.sql                    # 建库建表
+mysql -uroot -p < sql/migrate_v1.1.sql        # 增量迁移 v1.1 ~ v1.6
+mysql -uroot -p < sql/migrate_v1.2.sql
+# ... 依次到 migrate_v1.6.sql
+mysql -uroot -p < sql/demo_data_v2.sql        # 演示数据
 ```
 
-> ⚠️ **注意**：`init.sql` 第 1 条语句是 `DROP DATABASE`，会**先删除同名数据库再重建**。
-> 仅适用于全新初始化；库中已有数据时**不要执行**，否则数据会全部丢失。
+> ⚠️ **注意**：`init.sql` 第 1 条语句是 `DROP DATABASE IF EXISTS online_study`，
+> 会先删除**名为 online_study 的库**再重建。仅适用于全新初始化；库中已有数据时**不要执行**。
 
 ### 3. 启动后端
 
@@ -55,24 +67,31 @@ cd online_study_backend
 # 复制配置模板，然后按需修改（尤其是数据库账号密码）
 cp src/main/resources/application.yml.example src/main/resources/application.yml
 
-# 启动
-mvn spring-boot:run
+mvn spring-boot:run        # 默认端口 8081
 ```
 
-后端默认运行在 **http://localhost:8081**。
-
-> 真实配置文件 `application.yml` 已被 `.gitignore` 排除，不会进入仓库。
+> 真实配置文件 `application.yml` 已被 `.gitignore` 排除，不会进入仓库；
 > 数据库密码等敏感信息建议通过环境变量注入（见模板中的 `${DB_PASSWORD}` 写法）。
+> AI 相关配置见模板中的 `ai.*` 段（endpoint / api-key / 模型名）。
 
 ### 4. 启动前端
 
 ```bash
 cd online_study_frontend
 npm install
-npm run dev
+npm run dev                # 默认 http://localhost:3000，Vite 把 /api 代理到 8081
 ```
 
-前端默认运行在 **http://localhost:3000**（Vite 会把 `/api` 代理到后端 8081）。
+### 演示账号
+
+| 角色 | 账号 | 密码 |
+|---|---|---|
+| 学员 | student1 | 123456 |
+| 教师 | teacher1 | 123456 |
+| 管理员 | admin | 123456 |
+
+> 使用智能助教前，需在「智能助教」页点击**重建知识库**——把课程/作业/资源数据切块、
+> 向量化载入内存向量库（后端重启后需重新执行）。
 
 ---
 
@@ -82,20 +101,19 @@ npm run dev
 online_study/
 ├── online_study_backend/          # 后端 Spring Boot 工程
 │   └── src/main/java/com/online/study/
+│       ├── ai/                    # 智能助教（RAG + 工具调用，8 个类）
 │       ├── common/                # 统一返回 Result / 分页 PageResult / 状态码
 │       ├── exception/             # 业务异常 + 全局异常处理
 │       ├── config/                # Security / JWT 过滤器 / MyBatis-Plus / Web 配置
 │       ├── controller/            # 接口层
 │       ├── service/               # 业务层
 │       ├── mapper/                # 数据访问层
-│       ├── entity/                # 实体
-│       └── utils/                 # 工具类
+│       ├── entity/ vo/            # 实体与视图对象
+│       └── utils/                 # JWT、统一返回等工具
 ├── online_study_frontend/         # 前端 Vue3 工程
-│   └── src/
-│       ├── views/                 # 页面
-│       ├── router/                # 路由
-│       └── utils/                 # Axios 封装
+│   └── src/{views, router, utils, styles}
 ├── docs/                          # 需求与设计文档
+├── sql/                           # 增量迁移与演示数据
 └── init.sql                       # 建库建表脚本
 ```
 
@@ -106,11 +124,7 @@ online_study/
 所有接口统一返回如下结构，前端只需在 Axios 拦截器一处解包：
 
 ```json
-{
-  "code": 200,
-  "message": "操作成功",
-  "data": {}
-}
+{ "code": 200, "message": "操作成功", "data": {} }
 ```
 
 | 层 | 处理方式 |
@@ -130,6 +144,7 @@ online_study/
 | [详细需求列表](docs/详细需求列表.md) | 功能点明细 |
 | [表设计](docs/表设计.md) | 数据库表结构与字段说明 |
 | [项目实现与结构](docs/项目实现与结构.md) | 代码结构说明 |
+| [AI 智能助教模块设计](docs/AI模块设计.md) | RAG 与工具调用的设计决策与实现 |
 
 ---
 
@@ -137,9 +152,15 @@ online_study/
 
 - [x] 框架升级：Spring Boot 2.7.15 → 3.3.5，适配 Spring Security 6 与 JJWT 0.12
 - [x] 工程底座：统一返回、全局异常、参数校验、分页插件
-- [ ] 安全加固：接口级鉴权、身份可信化、输入校验、上传白名单
-- [ ] 业务增强：报名名额控制、课程审核工作流、操作日志
-- [ ] 智能助教：基于课程与论坛内容的检索增强问答（RAG）
+- [x] 安全加固：接口级鉴权、身份可信化、报名审核越权修复
+- [x] 业务增强：报名名额控制、课程审核工作流、操作日志
+- [x] 成绩模型重构：分数落提交记录、课程两级展示、未批改不计平均
+- [x] 论坛改造：限时编辑、收藏入口、独立发帖页、作者姓名展示
+- [x] 资源鉴权下载与在线预览（防路径穿越、RFC 5987 中文文件名）
+- [x] 智能助教：自研 RAG 问答 + Function Calling（按角色裁剪）
+- [ ] 向量库持久化（替换内存实现，解决重启丢失）
+- [ ] 混合检索（向量 + 关键词）与重排序
+- [ ] 回答引用溯源（标注答案来自哪份资料）
 - [ ] 部署上线：Nginx 反向代理 + 云服务器
 
 ---
