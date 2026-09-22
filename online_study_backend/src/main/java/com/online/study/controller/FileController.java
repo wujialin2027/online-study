@@ -2,6 +2,9 @@ package com.online.study.controller;
 
 import com.online.study.common.Result;
 import com.online.study.common.ResultCode;
+import com.online.study.config.QuotaProperties;
+import com.online.study.utils.CurrentUserUtil;
+import com.online.study.utils.DailyQuota;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -56,6 +59,15 @@ public class FileController {
     @Value("${file.upload.path:uploads/}")
     private String uploadPath;
 
+    /** 每人每日上传次数上限（演示环境防灌盘，见 QuotaProperties 的说明） */
+    private final QuotaProperties quota;
+    private final DailyQuota dailyQuota;
+
+    public FileController(QuotaProperties quota, DailyQuota dailyQuota) {
+        this.quota = quota;
+        this.dailyQuota = dailyQuota;
+    }
+
     @PostMapping("/upload")
     public Result<Map<String, String>> upload(@RequestParam("file") MultipartFile file) {
         if (file == null || file.isEmpty()) {
@@ -69,6 +81,14 @@ public class FileController {
             return Result.failure(ResultCode.PARAM_ERROR,
                     "不支持的文件类型（" + (extension.isEmpty() ? "无扩展名" : extension)
                             + "），仅支持图片、文档与压缩包");
+        }
+
+        // 额度检查放在类型校验【之后】：传个 .exe 被拒是"没通过校验"，
+        // 不应该占用当天的上传次数，否则恶意请求可以先把自己的额度耗光。
+        String bucket = "upload:" + CurrentUserUtil.getRole() + ":" + CurrentUserUtil.getId();
+        if (!dailyQuota.tryAcquire(bucket, quota.getUploadDaily())) {
+            return Result.failure(ResultCode.PARAM_ERROR,
+                    "今天上传的文件数已达上限（每日 " + quota.getUploadDaily() + " 个），请明天再试");
         }
 
         try {

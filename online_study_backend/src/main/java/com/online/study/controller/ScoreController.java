@@ -33,6 +33,7 @@ import com.online.study.exception.BizException;
 import com.online.study.vo.CourseScoreVO;
 import com.online.study.vo.HomeworkScoreVO;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 /**
  * 成绩接口
@@ -70,11 +71,13 @@ public class ScoreController {
     private UserNameResolver userNameResolver;
 
     @GetMapping("/list")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public List<Score> list() {
         return service.list();
     }
 
     @PostMapping("/query")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public List<Score> query(@RequestBody Map<String, Object> params) {
         QueryWrapper<Score> wrapper = QueryUtil.buildSafeWrapper(Score.class, params);
         return service.list(wrapper);
@@ -86,13 +89,22 @@ public class ScoreController {
      * 前两个字段由 PageQuery 解析（含默认值与上限保护），其余作为查询条件经白名单校验。
      */
     @PostMapping("/page")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public Result<PageResult<Score>> page(@RequestBody Map<String, Object> params) {
         Page<Score> page = PageQuery.of(params);
         QueryWrapper<Score> wrapper = QueryUtil.buildSafeWrapper(Score.class, params);
         return Result.success(PageResult.of(service.page(page, wrapper)));
     }
 
+    /**
+     * 录入 / 修改总评（教师、管理员）。
+     *
+     * <p>学员不能调：作业分走 {@code /homework-submit/grade}，总评由服务端重算；
+     * 这个接口只是教师手动补录考试分用的。原来只要求「已登录」，
+     * 学员可以自己给自己写总评。
+     */
     @PostMapping("/save")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public boolean save(@RequestBody Score entity) {
         validateScore("作业分数", entity.getHomeworkScore());
         validateScore("考试分数", entity.getExamScore());
@@ -330,7 +342,9 @@ public class ScoreController {
         }
     }
 
+    /** 删除总评记录（管理员） */
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public boolean delete(@PathVariable Integer id) {
         return service.removeById(id);
     }

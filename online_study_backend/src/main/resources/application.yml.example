@@ -33,10 +33,21 @@ jwt:
 ai:
   api-key: ${AI_API_KEY:}
   base-url: ${AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-  chat-model: ${AI_CHAT_MODEL:qwen-plus}
+  # 默认用百炼上更便宜的对话模型；写成 qwen-plus 等商用模型会明显更贵
+  chat-model: ${AI_CHAT_MODEL:deepseek-v4.1-flash}
   embedding-model: ${AI_EMBEDDING_MODEL:text-embedding-v4}
 
-# 自助注册开关（默认 true 开放）。部署到公网做演示时改为 false，
-# 关闭「注册」入口，防止陌生人往演示环境灌垃圾数据；演示账号直接初始化进数据库
+# 自助注册开关（默认 true 开放）。
+# 注意：开放注册时，服务端**只放行「学员」角色** —— 教师能建课 / 发作业 / 传课件，
+# 公开注册会被人往演示环境灌垃圾数据。需要教师号请由管理员在库内开通。
+# 想完全关闭注册入口就改成 false（服务端兜底拦截，不只是前端隐藏入口）。
 app:
   register-enabled: true
+
+  # 演示环境防刷额度。不配就用代码里的默认值（见 QuotaProperties），所以本地开发
+  # 不用改这里；线上想调整额度再覆盖。
+  quota:
+    ai-daily: 30          # 每个账号每天最多提问次数（一次提问会真实产生 API 费用）
+    ai-daily-demo: 100    # 演示账号放宽（多人共用，正常额度容易被卡住）
+    upload-daily: 20      # 每个账号每天最多上传文件次数（服务器磁盘只有 2G）
+    demo-account: student # 演示账号登录名，与 README / 简历里公布的保持一致

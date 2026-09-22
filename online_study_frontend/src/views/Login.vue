@@ -19,7 +19,7 @@
       <div class="form-box">
         <h2 class="form-title">{{ activeTab === 'login' ? '欢迎回来' : '注册新账号' }}</h2>
         <p class="form-tip">
-          {{ activeTab === 'login' ? '请使用你的账号登录系统' : '填写信息完成注册，教师账号需管理员审核' }}
+          {{ activeTab === 'login' ? '请使用你的账号登录系统' : '注册后为学员账号，可体验课程、作业与 AI 智能助教' }}
         </p>
 
         <el-tabs v-model="activeTab">
@@ -66,6 +66,34 @@
                   登 录
                 </el-button>
               </el-form-item>
+
+              <!-- 演示入口：HR / 面试官不用注册、不用抄账号密码，点一下直接进系统。
+                   密码本来就写在公开的 README 和简历里（演示环境靠共用账号体验），
+                   放在前端不存在额外泄露。
+                   为什么给两个入口：教师端比学员端多「知识库管理」面板（重建知识库 /
+                   补充资料）和教师专属工具，只看学员端会漏掉一半能力。
+                   两个都传 setAuth(..., false)，只写 sessionStorage —— 关掉标签页
+                   登录态即失效，不会把演示登录留在别人电脑的浏览器里。 -->
+              <el-divider>或</el-divider>
+              <el-button
+                class="demo-btn"
+                size="large"
+                :loading="demoLoading === 'student'"
+                :disabled="demoLoading !== ''"
+                @click="handleDemoLogin('student')"
+              >
+                一键体验 · 学员端
+              </el-button>
+              <el-button
+                class="demo-btn"
+                size="large"
+                :loading="demoLoading === 'teacher'"
+                :disabled="demoLoading !== ''"
+                @click="handleDemoLogin('teacher')"
+              >
+                一键体验 · 教师端
+              </el-button>
+              <p class="demo-hint">无需注册，直接体验课程 / 作业 / AI 智能助教</p>
             </el-form>
           </el-tab-pane>
 
@@ -84,11 +112,11 @@
               <el-form-item label="手机号" prop="phone">
                 <el-input v-model="regForm.phone" maxlength="11" placeholder="请输入 11 位手机号" />
               </el-form-item>
-              <el-form-item label="角色" prop="role">
-                <el-select v-model="regForm.role" style="width: 100%" placeholder="请选择角色">
-                  <el-option label="学员" value="student" />
-                  <el-option label="教师" value="teacher" />
-                </el-select>
+              <!-- 公开注册只放行学员：教师角色能建课、发作业、传课件，
+                   开放出去演示环境会被人灌垃圾数据。这里不放下拉框，
+                   避免给出"可以选教师"的错觉（服务端还会再挡一层）。 -->
+              <el-form-item label="注册角色">
+                <el-tag type="info" size="large" effect="plain">学员</el-tag>
               </el-form-item>
               <el-form-item>
                 <el-button
@@ -123,6 +151,8 @@ const route = useRoute()
 const activeTab = ref('login')
 const loading = ref(false)
 const regLoading = ref(false)
+/** 正在登录的演示角色（'' / 'student' / 'teacher'），两个演示按钮共用 */
+const demoLoading = ref('')
 /** 是否「记住我」：勾选存 localStorage，不勾只存当前标签页（关浏览器即失效） */
 const remember = ref(false)
 
@@ -130,7 +160,13 @@ const loginFormRef = ref()
 const regFormRef = ref()
 
 const form = ref({ account: '', password: '' })
-const regForm = ref({ account: '', password: '', name: '', phone: '', role: '' })
+/**
+ * 注册表单。
+ * role 写死 'student'：公开注册只放行学员，前端不给选择权（服务端也会挡）。
+ * 仍然放在请求体里发给后端，是为了让「注册的是什么角色」在接口上显式可见，
+ * 而不是靠后端猜。
+ */
+const regForm = ref({ account: '', password: '', name: '', phone: '', role: 'student' })
 
 const loginRules = {
   account: [{ required: true, message: '请输入账号', trigger: 'blur' }],
@@ -147,8 +183,7 @@ const regRules = {
   phone: [
     { required: true, message: '请输入手机号', trigger: 'blur' },
     { pattern: /^1\d{10}$/, message: '请输入正确的 11 位手机号', trigger: 'blur' }
-  ],
-  role: [{ required: true, message: '请选择角色', trigger: 'change' }]
+  ]
 }
 
 /**
@@ -194,6 +229,51 @@ const handleLogin = async () => {
     // 失败提示已由 request.js 统一处理（账号密码错误、账号被禁用等）
   } finally {
     loading.value = false
+  }
+}
+
+/**
+ * 演示账号表。
+ * 这几个值本来就写在公开的 README 和简历里（演示环境靠共用账号体验），
+ * 放在前端不存在额外泄露 —— 唯一的纪律是：**不在表里的**真实教师 / 管理员
+ * 账号密码绝不能写进前端代码。
+ */
+const DEMO_ACCOUNTS = {
+  student: { account: 'student', password: 'demo123', label: '学员' },
+  teacher: { account: 'teacher', password: 'demo123', label: '教师' }
+}
+
+/**
+ * 一键体验：用固定演示账号登录，省掉 HR「抄账号密码」这一步。
+ *
+ * role 决定用哪个演示账号（student / teacher）。
+ *
+ * 两个细节：
+ * <ul>
+ *   <li>第二个参数传 false：setAuth 的第二个参数是「记住我」。演示登录必须
+ *       <b>只写 sessionStorage</b>，这样关掉标签页登录态就消失，不会把演示
+ *       账号的登录状态留在别人电脑的浏览器里。</li>
+ *   <li>demoLoading 用字符串而不是布尔：两个按钮共用一个变量，存的是
+ *       "正在登哪个角色"，模板里才能只让被点的那个转圈、另一个置灰，
+ *       避免连点两次发出两个登录请求。</li>
+ * </ul>
+ */
+const handleDemoLogin = async (role) => {
+  const demo = DEMO_ACCOUNTS[role]
+  if (!demo || demoLoading.value) return
+  demoLoading.value = role
+  try {
+    const data = await request.post('/auth/login', {
+      account: demo.account,
+      password: demo.password
+    })
+    setAuth({ token: data.token, user: data.user, role: data.role }, false)
+    ElMessage.success(`已进入演示环境（${demo.label}账号）`)
+    router.push(resolveRedirect())
+  } catch (error) {
+    // 失败提示已由 request.js 统一处理（例如演示账号被禁用）
+  } finally {
+    demoLoading.value = ''
   }
 }
 
@@ -311,6 +391,31 @@ const handleRegister = async () => {
   width: 100%;
   margin-top: 4px;
   letter-spacing: 4px;
+}
+
+/* 演示入口：视觉上弱于「登录」主按钮，避免抢主流程的注意力。
+   两个按钮竖排、各占满宽 —— 并排会把按钮文字挤到换行，窄窗口更明显 */
+.demo-btn {
+  width: 100%;
+}
+
+/* Element Plus 给相邻的 .el-button 默认加了 margin-left: 12px，
+   竖排时会把第二个按钮整体推右、和第一个错开，必须清掉 */
+.demo-btn + .demo-btn {
+  margin-left: 0;
+  margin-top: 10px;
+}
+
+.demo-hint {
+  margin: 8px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: #909399;
+}
+
+/* 分割线在表单里容易被 form-item 的间距顶开，收紧一点 */
+.form-box :deep(.el-divider) {
+  margin: 6px 0 14px;
 }
 
 /* 窄屏（手机 / 小窗口）隐藏品牌区，只留表单 */

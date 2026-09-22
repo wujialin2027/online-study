@@ -330,7 +330,10 @@ const ask = async () => {
   await scrollToBottom()
 
   try {
-    const data = await request.post('/ai/ask', { question: text })
+    // 单独把这一个请求的超时放宽到 90 秒：全局默认是 30 秒，而一次提问
+    // 要经过「向量化 → 检索 → 最多 5 轮工具调用 → 生成回答」，后端读超时
+    // 本来就是 60 秒。用全局值会出现「后端还在算、前端先弹超时」的假故障。
+    const data = await request.post('/ai/ask', { question: text }, { timeout: 90000 })
     messages.value.push({
       role: 'assistant',
       text: data?.answer || '（模型没有返回内容）',

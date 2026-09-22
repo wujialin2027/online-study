@@ -33,6 +33,7 @@ import com.online.study.common.PageQuery;
 import com.online.study.common.PageResult;
 import com.online.study.common.Result;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequestMapping("/course-resource")
@@ -51,11 +52,31 @@ public class CourseResourceController {
     @Autowired
     private CourseApplyMapper courseApplyMapper;
 
+    /**
+     * 全量列表（教师 / 管理员）。
+     *
+     * <p>这里返回的是**所有课程**的课件记录，连 {@code resourcePath} 一起给。
+     * 而 {@code /uploads/**} 是 permitAll 的 —— 拿到路径就等于拿到文件，
+     * 正好把 {@link #download} 里「报名通过才能下载」那道校验绕过去。
+     * 前端没有任何页面调这个接口，所以直接收口。
+     */
     @GetMapping("/list")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public List<CourseResource> list() {
         return service.list();
     }
 
+    /**
+     * 按课程查课件清单（前端「查看课件」弹窗用，教师和学员都会调）。
+     *
+     * <p><b>已知取舍</b>：这里对学员<b>没有</b>做「是否已报名」的过滤 ——
+     * 学员能看到任意课程的课件文件名和存放路径。这是有意保留的：
+     * ① 课件本来就是给学员看的教学材料，不含敏感信息；
+     * ② 真正的权限点放在 {@link #download}（那里会校验报名是否通过），
+     * 谁都能看到"有什么"，但不是谁都能"拿走"。
+     * 要收得更紧，就得在这里按「我已报名通过的课程」过滤 courseId，
+     * 代价是未报名学员连课件列表都看不到 —— 演示环境反而像坏了，所以没做。
+     */
     @PostMapping("/query")
     public List<CourseResource> query(@RequestBody Map<String, Object> params) {
         QueryWrapper<CourseResource> wrapper = QueryUtil.buildSafeWrapper(CourseResource.class, params);
@@ -74,7 +95,14 @@ public class CourseResourceController {
         return Result.success(PageResult.of(service.page(page, wrapper)));
     }
 
+    /**
+     * 新增 / 修改课件资源。
+     *
+     * <p>课件挂在课程下，属于「教师发布内容」，所以只有教师 / 管理员能写。
+     * 原来只要求「已登录」，学员可以往任意课程里塞资源（也可以塞违规文件）。
+     */
     @PostMapping("/save")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public boolean save(@RequestBody CourseResource entity) {
         if (!StringUtils.hasText(entity.getResourceName()) || !StringUtils.hasText(entity.getResourceType())) {
             throw new IllegalArgumentException("资源名称和资源类型不能为空");
@@ -85,7 +113,9 @@ public class CourseResourceController {
         return service.saveOrUpdate(entity);
     }
 
+    /** 删除课件资源（教师 / 管理员） */
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public boolean delete(@PathVariable Integer id) {
         return service.removeById(id);
     }

@@ -6,7 +6,10 @@ import com.online.study.ai.KnowledgeIngestService;
 import com.online.study.annotation.OperationLog;
 import com.online.study.common.Result;
 import com.online.study.common.ResultCode;
+import com.online.study.config.QuotaProperties;
 import com.online.study.exception.BizException;
+import com.online.study.utils.CurrentUserUtil;
+import com.online.study.utils.DailyQuota;
 import com.online.study.vo.AiAnswerVO;
 import com.online.study.vo.AiChatMessageVO;
 import com.online.study.vo.AiKnowledgeVO;
@@ -44,6 +47,10 @@ import java.util.Map;
  * <p>「历史对话」的两个接口不加 {@code @PreAuthorize}：它们是"我的数据"，
  * 身份完全由 JWT 决定（见 {@link AiChatHistoryService}），任何登录用户都只能
  * 看到、删掉自己的记录，越权在数据层就被挡住了，不需要额外限角色。
+ *
+ * <h3>额度</h3>
+ * 「提问」虽然不限角色，但按「账号 + 自然日」限次数（{@code app.quota.ai-daily}）——
+ * 它是唯一会按 token 计费的接口，演示环境必须卡住上限。详见 {@link #ask}。
  */
 @RestController
 @RequestMapping("/ai")
@@ -53,12 +60,20 @@ public class AiAssistantController {
     private final KnowledgeIngestService ingestService;
     private final AiChatHistoryService historyService;
 
+    /** 每人每日提问额度（演示环境防刷，见 QuotaProperties 的说明） */
+    private final QuotaProperties quota;
+    private final DailyQuota dailyQuota;
+
     public AiAssistantController(AiAssistantService assistantService,
                                  KnowledgeIngestService ingestService,
-                                 AiChatHistoryService historyService) {
+                                 AiChatHistoryService historyService,
+                                 QuotaProperties quota,
+                                 DailyQuota dailyQuota) {
         this.assistantService = assistantService;
         this.ingestService = ingestService;
         this.historyService = historyService;
+        this.quota = quota;
+        this.dailyQuota = dailyQuota;
     }
 
     /** 知识库状态：前端用它渲染页面顶部的资料状态条 */
@@ -70,6 +85,16 @@ public class AiAssistantController {
     /**
      * 提问
      * <p>请求体：{@code {"question": "作业什么时候交？"}}
+     *
+     * <p><b>为什么这里要卡一道额度</b>：一次提问会真实调用百炼的向量接口（检索）
+     * 和大模型接口（生成），是按 token 计费的。演示环境注册开放，任何陌生人
+     * 拿到账号后都能调这个接口 —— 不加限制就是一个可以无限刷的付费接口。
+     * 所以按「账号 + 自然日」计数，到量直接拒绝，在最前面就挡住，
+     * 连向量化都不会触发（也就不产生任何费用）。
+     *
+     * <p>注意限额放在 Controller 而不是 Service：Service 里的
+     * {@link AiAssistantService#ask} 是纯业务算法流程，不该关心"谁能用几次"
+     * 这种访问策略；把访问策略留在接口层，两件事的边界才清楚。
      */
     @PostMapping("/ask")
     public Result<AiAnswerVO> ask(@RequestBody Map<String, String> body) {
@@ -77,6 +102,20 @@ public class AiAssistantController {
         if (question == null || question.isBlank()) {
             throw new BizException(ResultCode.PARAM_ERROR, "问题不能为空");
         }
+
+        String role = CurrentUserUtil.getRole();
+        String account = CurrentUserUtil.getAccount();
+        Integer userId = CurrentUserUtil.getId();
+        int limit = quota.askLimit(account);
+
+        // 计数键带上角色：学员 12 号和教师 12 号是两个人，不能共用一个额度
+        String bucket = "ai:" + role + ":" + userId;
+        if (!dailyQuota.tryAcquire(bucket, limit)) {
+            throw new BizException(ResultCode.PARAM_ERROR,
+                    "今天的提问次数已用完（每日 " + limit + " 次），明天再试；"
+                            + "也可以直接到课程详情或作业页面查看资料。");
+        }
+
         return Result.success(assistantService.ask(question));
     }
 

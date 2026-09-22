@@ -81,9 +81,16 @@ public class CourseApplyController {
      * 分页查询。
      * 请求体示例：{"pageNum": 1, "pageSize": 10, "courseName": "Java"}
      * 前两个字段由 PageQuery 解析（含默认值与上限保护），其余作为查询条件经白名单校验。
+     *
+     * <p>学员同样强制只查自己的报名 —— 与上面 {@code /list}、{@code /query} 保持一致。
+     * 这个接口原来漏了这一步：教师用的是 {@code /list}，所以前端没人调它，
+     * 但接口摆在那里，学员 POST 一个空请求体就能把全校的报名记录分页翻走。
      */
     @PostMapping("/page")
     public Result<PageResult<CourseApply>> page(@RequestBody Map<String, Object> params) {
+        if ("student".equals(CurrentUserUtil.getRole())) {
+            params.put("studentId", CurrentUserUtil.getId());
+        }
         Page<CourseApply> page = PageQuery.of(params);
         QueryWrapper<CourseApply> wrapper = QueryUtil.buildSafeWrapper(CourseApply.class, params);
         return Result.success(PageResult.of(service.page(page, wrapper)));

@@ -53,13 +53,22 @@ public class HomeworkSubmitController {
     @Autowired
     private ScoreService scoreService;
 
+    /**
+     * 全量列表。只给教师 / 管理员。
+     *
+     * <p>学员要查提交记录一律走 {@code /query}，由服务端强制带上自己的 studentId
+     * （见 {@link #scopeToSelf}）—— 这里返回的是全站提交记录，含别人的分数和评语，
+     * 不能对学员开放。
+     */
     @GetMapping("/list")
+    @PreAuthorize("hasAnyRole('TEACHER','ADMIN')")
     public List<HomeworkSubmit> list() {
         return service.list();
     }
 
     @PostMapping("/query")
     public List<HomeworkSubmit> query(@RequestBody Map<String, Object> params) {
+        scopeToSelf(params);
         QueryWrapper<HomeworkSubmit> wrapper = QueryUtil.buildSafeWrapper(HomeworkSubmit.class, params);
         return service.list(wrapper);
     }
@@ -71,6 +80,7 @@ public class HomeworkSubmitController {
      */
     @PostMapping("/page")
     public Result<PageResult<HomeworkSubmit>> page(@RequestBody Map<String, Object> params) {
+        scopeToSelf(params);
         Page<HomeworkSubmit> page = PageQuery.of(params);
         QueryWrapper<HomeworkSubmit> wrapper = QueryUtil.buildSafeWrapper(HomeworkSubmit.class, params);
         return Result.success(PageResult.of(service.page(page, wrapper)));
@@ -185,12 +195,73 @@ public class HomeworkSubmitController {
         return Result.success(service.courseStats(courseId));
     }
 
+    /**
+     * 删除提交记录：学员撤回自己的，教师删自己作业下的，管理员不限。
+     *
+     * <h3>修复的越权漏洞（本次重点）</h3>
+     * 本方法原来只有一行 {@code service.removeById(id)}：类上没有任何
+     * {@code @PreAuthorize}，SecurityConfig 又只要求「已登录」，
+     * 于是<b>任何登录用户只要拿到别人的 submitId，就能删掉别人的作业提交</b>。
+     * 接口本身是给学员「撤回自己的提交」用的（前端 {@code Homework.vue} 的
+     * handleRecallSubmit），所以不能简单地把权限收成 TEACHER —— 那样会把正常功能一起砍掉。
+     * 正确做法是<b>把「数据归属」写进判断</b>：能碰这条记录的前提是「它是你的」。
+     *
+     * <p>这也是「开放注册」之前必须先修掉的一类问题：只挡角色不够，
+     * 还要挡「同角色越权」（学员删学员）。
+     */
     @DeleteMapping("/{id}")
     public boolean delete(@PathVariable Integer id) {
+        Integer uid = CurrentUserUtil.getId();
+        String role = CurrentUserUtil.getRole();
+        if (uid == null || role == null) {
+            throw new BizException(ResultCode.UNAUTHORIZED, "登录状态已失效，请重新登录");
+        }
+
+        HomeworkSubmit submit = service.getById(id);
+        if (submit == null) {
+            throw new BizException(ResultCode.DATA_NOT_FOUND, "提交记录不存在或已被删除");
+        }
+
+        if (!CurrentUserUtil.isAdmin()) {
+            if ("student".equals(role)) {
+                // 学员只能撤回自己提交的那一份
+                if (!Objects.equals(submit.getStudentId(), uid)) {
+                    throw new BizException(ResultCode.FORBIDDEN, "只能撤回自己的作业提交");
+                }
+            } else if ("teacher".equals(role)) {
+                // 教师只能处理自己发布的作业下的提交
+                Homework homework = homeworkService.getById(submit.getHomeworkId());
+                if (homework == null || !Objects.equals(homework.getPublishTeacherId(), uid)) {
+                    throw new BizException(ResultCode.FORBIDDEN, "只能删除自己发布的作业下的提交记录");
+                }
+            } else {
+                throw new BizException(ResultCode.FORBIDDEN, "没有权限执行该操作");
+            }
+        }
+
         return service.removeById(id);
     }
 
     // ==================== 内部辅助 ====================
+
+    /**
+     * 学员查询时，强制把条件里的 studentId 覆盖成「当前登录人」。
+     *
+     * <p>不加这一步的话，学员把请求体里的 studentId 换成别人的（或者干脆不传），
+     * 就能翻出全站提交记录 —— 里面带着别人的分数和教师评语。
+     *
+     * <p>这里选择<b>直接覆盖</b>而不是「校验后拒绝」，是因为查询条件本来就该以
+     * 服务端解析出的身份为准，前端传什么都不该影响这个前提。
+     * 教师 / 管理员不受影响，可以按自己的需要筛选学员。
+     *
+     * <p>注意 {@code studentId} 是 HomeworkSubmit 上的真实字段，
+     * {@link QueryUtil} 白名单能识别它，所以放进去会被正常拼成 {@code student_id = ?}。
+     */
+    private void scopeToSelf(Map<String, Object> params) {
+        if (params != null && "student".equals(CurrentUserUtil.getRole())) {
+            params.put("studentId", CurrentUserUtil.getId());
+        }
+    }
 
     /**
      * 重算某学员某课程的作业平均分与总评，写回 score 表。
