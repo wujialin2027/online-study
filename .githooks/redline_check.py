@@ -142,8 +142,19 @@ def check_paths(paths, problems, warns):
 
 
 def check_content(diff_text, problems, warns):
-    """只扫新增行（以 + 开头且不是 +++），避免历史遗留数据反复告警。"""
+    """只扫新增行（以 + 开头且不是 +++），避免历史遗留数据反复告警。
+
+    跳过 .githooks/ 自身：这个文件里必然写着 "简历|面试|投递" 这些词（它们是规则的一部分），
+    也必然带着 shebang 的绝对路径。不跳过的话，每次改检查脚本都会给自己报一堆误报，
+    真正的问题就淹没在噪音里了。
+    """
+    current = ""
     for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            current = line[6:]
+            continue
+        if current.startswith(".githooks/"):
+            continue
         if not line.startswith("+") or line.startswith("+++"):
             continue
         for rule, why in BLOCK_CONTENT:
