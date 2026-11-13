@@ -19,7 +19,21 @@
         <mybatis-plus.version>3.5.18</mybatis-plus.version>
         <jsqlparser.version>4.9</jsqlparser.version>
         <jjwt.version>0.12.6</jjwt.version>
+        <spring-ai.version>2.0.2</spring-ai.version>
     </properties>
+    <!-- Spring AI 2.0 用 BOM 统一版本：BOM 里管着几十个构件（chat / embedding / advisor / vector-store），
+         单独给某个 starter 写版本号迟早会撞。2.0.2 = 2026-10-22 发布的最新 GA（2.1 还只有 RC）。 -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -101,6 +115,16 @@
             <artifactId>jjwt-jackson</artifactId>
             <version>${jjwt.version}</version>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- Spring AI 2.0：OpenAI 兼容 starter。2.0 起各家 provider 合并成同一个 SDK，
+             OpenAI 这一个 starter 就能接百炼（compatible-mode）、DeepSeek 等任何 OpenAI 兼容端点。
+             ⚠️ 光加这一个依赖不会改变现有行为：application.yml 里把
+             spring.ai.model.chat / embedding 都设成 none，模型自动配置就不生效，
+             老链路（AiChatClient 直连）照旧跑。真正启用是在 P2-S3。 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
         </dependency>
 
         <dependency>

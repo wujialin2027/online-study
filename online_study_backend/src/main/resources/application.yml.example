@@ -14,6 +14,25 @@ spring:
     multipart:
       max-file-size: 50MB
       max-request-size: 50MB
+  # ===== Spring AI 2.0（P2 引入）=====
+  # 注意 base-url 与下面 ai.base-url 的差别：ai.base-url 是「完整接口前缀」，要带 /v1；
+  # 这里 Spring AI 自己会拼 /v1/chat/completions，所以只写到 compatible-mode。
+  # model.chat / model.embedding 现在是 none = 只装依赖、不启用自动配置，
+  # 保证 legacy 链路行为完全不变；P2-S3 真正接新引擎时再改成 openai。
+  ai:
+    model:
+      chat: none
+      embedding: none
+    openai:
+      api-key: ${AI_API_KEY:}
+      base-url: ${AI_BASE_URL_SPRING_AI:https://dashscope.aliyuncs.com/compatible-mode}
+      chat:
+        options:
+          model: ${AI_CHAT_MODEL:deepseek-v4.1-flash}
+          temperature: 0.2
+      embedding:
+        options:
+          model: ${AI_EMBEDDING_MODEL:text-embedding-v4}
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
@@ -31,11 +50,30 @@ jwt:
 # 若想用 DeepSeek 官方对话模型，把 base-url 改为 https://api.deepseek.com、chat-model 改为 deepseek-chat，
 # 但向量化仍需另配一家（DeepSeek 官方没有 embedding 接口）
 ai:
+  # ===== 引擎开关（P2 引入）=====
+  # legacy    = 原有手写链路：RestClient 直连 + 自写切块/检索/工具循环
+  # spring-ai = 新的 Spring AI 2.0 链路
+  # 切换只改这一行，不改代码、不重新打包；旧引擎保留作对照基线与故障回退。
+  engine: ${AI_ENGINE:legacy}
   api-key: ${AI_API_KEY:}
   base-url: ${AI_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
   # 默认用百炼上更便宜的对话模型；写成 qwen-plus 等商用模型会明显更贵
   chat-model: ${AI_CHAT_MODEL:deepseek-v4.1-flash}
   embedding-model: ${AI_EMBEDDING_MODEL:text-embedding-v4}
+  # RAG 检索参数：与手写版常量一一对应，两个引擎必须用同一套，
+  # 否则跑同一份题集对比出来的分数没有意义。
+  rag:
+    top-k: 4
+    min-score: 0.28
+    chunk-size: 400
+    chunk-overlap: 60
+    max-chunks: 500
+  # 多轮记忆：每次提问带回最近几轮问答（一轮 = 一问一答）
+  memory:
+    window: 5
+  # 工具调用：一次提问最多来回几轮
+  tool:
+    max-rounds: 5
 
 # 自助注册开关（默认 true 开放）。
 # 注意：开放注册时，服务端**只放行「学员」角色** —— 教师能建课 / 发作业 / 传课件，
