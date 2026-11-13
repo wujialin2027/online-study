@@ -1,19 +1,33 @@
-#!C:/Users/21498/.workbuddy/binaries/python/versions/3.13.12/python.exe
-# -*- coding: utf-8 -*-
-"""推送前钩子：检查"这次要推上去的全部提交"，而不只是当前暂存区。
+#!/bin/sh
+# 推送前钩子：检查「这次要推上去的全部提交」，而不只是当前暂存区。
+#
+# 为什么提交前查过了还要再查一遍：
+#   ① 提交是本地动作，推送才是对外动作 —— 红线画在「对外」那一刻最准；
+#   ② 一次 push 可能带上好几条本地提交，逐条 commit 时的检查视角太窄，
+#      看不到「这些提交加起来会往远端暴露什么」；
+#   ③ 防手滑：--no-verify 也能绕过 commit 钩子，这里是最后一道。
+#
+# 注意：本钩子只管「内容该不该推」。push -f 会覆盖远端历史，那是另一类风险，
+# 靠纪律（不硬推）+ push 前 ls-remote 复核来挡，脚本层面拦不住。
+#
+# shebang 不带 Python 绝对路径的理由同 pre-commit。
 
-为什么提交前查过了还要再查一遍：
-  ① 提交是本地动作，推送才是对外动作 —— 红线画在"对外"这一刻最准；
-  ② 一次 push 可能带上好几条本地提交，逐条 commit 时的检查视角太窄，
-     看不到"这些提交加起来会往远端暴露什么"；
-  ③ 防手滑：--no-verify 也能绕过 commit 钩子，这里是最后一道。
+case "$0" in
+  */*) HERE=${0%/*} ;;
+  *)   HERE=. ;;
+esac
+PY=$(git config --get redline.python)
 
-注意：本钩子只管"内容该不该推"。push -f 会覆盖远端历史，那是另一类风险，
-靠纪律（不硬推）+ 常规 push 前的 ls-remote 复核来挡，脚本层面拦不住。
-"""
-import os
-import subprocess
-import sys
+if [ -z "$PY" ]; then
+  for c in python python3 py; do
+    if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+  done
+fi
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.exit(subprocess.call([sys.executable, os.path.join(HERE, "redline_check.py"), "push"]))
+if [ -z "$PY" ]; then
+  echo "[redline] python not found, red-line check SKIPPED." >&2
+  echo "[redline] fix once: git config redline.python \"<path-to-python.exe>\"" >&2
+  exit 0
+fi
+
+exec "$PY" "$HERE/redline_check.py" push

@@ -1,13 +1,35 @@
-#!C:/Users/21498/.workbuddy/binaries/python/versions/3.13.12/python.exe
-# -*- coding: utf-8 -*-
-"""提交前钩子：交给 redline_check.py 检查暂存区。
+#!/bin/sh
+# 提交前钩子：转交 redline_check.py 检查暂存区。
+#
+# 为什么 shebang 不写 Python 的绝对路径：这个文件是要进仓库的，
+# 写死 C:/Users/<用户名>/... 等于把本机目录结构公开出去。
+# 改成「先读 git 配置，再找 PATH」——机器相关的东西只存在 .git/config 里，不入库。
+#
+# 配置方法（每台机器做一次）：
+#   git config redline.python "C:/path/to/python.exe"
+#
+# 找不到 Python 时选择「跳过并提示」而不是「阻断提交」：
+# 钩子本身坏掉不该让正常开发停摆，但这行提示会一直出现，提醒去配。
 
-这层壳是必要的 —— 钩子脚本一旦因为环境问题（PATH 缺命令、编码不对）报错，
-会把正常提交也挡住。所有逻辑集中在 redline_check.py 一个文件里，两边只调不用改。
-"""
-import os
-import subprocess
-import sys
+# 不用 dirname：某些环境下调用钩子时 PATH 里没有 MSYS 工具，dirname 会 command not found，
+# HERE 变空后路径会退到盘符根目录（实测报 D:\redline_check.py 找不到）。
+# 纯 shell 参数展开没有这个依赖。
+case "$0" in
+  */*) HERE=${0%/*} ;;
+  *)   HERE=. ;;
+esac
+PY=$(git config --get redline.python)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.exit(subprocess.call([sys.executable, os.path.join(HERE, "redline_check.py"), "staged"]))
+if [ -z "$PY" ]; then
+  for c in python python3 py; do
+    if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+  done
+fi
+
+if [ -z "$PY" ]; then
+  echo "[redline] python not found, red-line check SKIPPED." >&2
+  echo "[redline] fix once: git config redline.python \"<path-to-python.exe>\"" >&2
+  exit 0
+fi
+
+exec "$PY" "$HERE/redline_check.py" staged
