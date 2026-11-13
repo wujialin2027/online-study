@@ -203,7 +203,7 @@ def check_sizes(paths, problems):
             problems.append("TOO-LARGE        %s -- %.1f MB (limit 5 MB)" % (show(f), size / 1048576.0))
 
 
-def report(problems, warns, mode):
+def report(problems, warns, mode, count=0):
     if warns:
         sys.stderr.write("\n[%s] %d item(s) worth a look (not blocking):\n" % (mode, len(warns)))
         for w in warns[:20]:
@@ -222,13 +222,14 @@ def report(problems, warns, mode):
             "and approved by the owner. Never bypass with --no-verify.\n\n")
         return 1
 
-    sys.stderr.write("[%s] red-line check passed (%d file(s))\n" % (mode, 0))
+    sys.stderr.write("[%s] red-line check passed (%d file(s))\n" % (mode, count))
     return 0
 
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "staged"
     problems, warns = [], []
+    count = 0
 
     if mode == "staged":
         paths = [f for f in git("diff", "--cached", "--name-only", "--diff-filter=ACM").splitlines() if f.strip()]
@@ -238,6 +239,7 @@ def main():
         check_doc_content(paths, problems, warns)
         check_sizes(paths, problems)
         check_content(git("diff", "--cached", "-U0", "--no-color"), problems, warns)
+        return report(problems, warns, mode, len(paths))
 
     elif mode == "push":
         # git 通过 stdin 传入：<local ref> <local sha> <remote ref> <remote sha>
@@ -257,6 +259,7 @@ def main():
         paths = sorted(paths)
         if not paths:
             return 0
+        count = len(paths)
         check_paths(paths, problems, warns)
         check_doc_content(paths, problems, warns)
         check_sizes(paths, problems)
@@ -274,7 +277,7 @@ def main():
         sys.stderr.write("unknown mode: %s\n" % mode)
         return 2
 
-    return report(problems, warns, mode)
+    return report(problems, warns, mode, count)
 
 
 if __name__ == "__main__":
