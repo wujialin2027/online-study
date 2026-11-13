@@ -1,8 +1,8 @@
 package com.online.study.ai;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import com.online.study.entity.Course;
 import com.online.study.entity.CourseApply;
 import com.online.study.entity.Homework;

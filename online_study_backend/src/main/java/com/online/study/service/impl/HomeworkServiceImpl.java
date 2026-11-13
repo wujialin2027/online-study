@@ -1,7 +1,7 @@
 package com.online.study.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.online.study.entity.Homework;
 import com.online.study.entity.HomeworkSubmit;
 import com.online.study.mapper.HomeworkMapper;

@@ -1,6 +1,6 @@
 package com.online.study.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.online.study.common.Result;
 import com.online.study.common.ResultCode;
 import jakarta.servlet.http.HttpServletResponse;

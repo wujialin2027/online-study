@@ -4,6 +4,7 @@ import com.online.study.common.ResultCode;
 import com.online.study.config.AiProperties;
 import com.online.study.exception.BizException;
 import com.online.study.vo.AiAnswerVO;
+import com.online.study.vo.AiChatMessageVO;
 import com.online.study.vo.AiKnowledgeVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -70,6 +71,24 @@ public class AiAssistantService {
     private static final int MAX_TOOL_ROUNDS = 5;
 
     /**
+     * 每次提问带回几轮历史问答（一轮 = 一问一答）。
+     *
+     * <p>为什么要带：模型是无状态的，每次请求都从零开始看。不带历史，"那门课要学多久"
+     * 里的"那门课"它就无从判断，只能反问用户 —— 而用户觉得自己明明刚说过。
+     *
+     * <p>为什么只带 5 轮：历史是"线索"不是"证据"，带得越多越危险 ——
+     * ① token 线性增长（每问多几千 token，成本直接翻倍）；
+     * ② 太久以前的答案会被模型当成本次答案抄走（比如半小时前查的分数，早过期了）。
+     */
+    private static final int MAX_HISTORY_ROUNDS = 5;
+
+    /**
+     * 单条历史消息的长度上限（字符）。
+     * <p>历史里的长表格对"接住指代"毫无帮助，只会把当前问题和参考资料挤到后面去。
+     */
+    private static final int MAX_HISTORY_CHARS = 300;
+
+    /**
      * 系统提示词 —— 约束模型的行为边界。
      *
      * <p><b>先说清楚有哪两条取信息的路径</b>：参考资料是静态快照，工具是实时查询。
@@ -107,6 +126,10 @@ public class AiAssistantService {
                追加"（说明：……）"这类关于数据来源或时效性的括号备注，也不要复述任何提示性文字。
             6. 使用简体中文，条理清晰。列举多项内容（如未交作业清单、成绩单）时使用 Markdown 表格或列表，
                全文控制在 400 字以内。
+            7. 上文可能包含你与当前用户之前的对话记录（如果有的话）。当对方用「那门课」「那份作业」
+               「它」「刚才那个」这类指代时，先从历史对话里确认指的是哪一个，不要反问"你指哪门课"。
+               但要注意：历史回答里的数字、人数、分数、截止时间一律不能直接当成本次答案 ——
+               凡是需要数据的地方，仍然必须重新调用工具查询最新结果。
             """;
 
     private final InMemoryVectorStore vectorStore;
@@ -139,6 +162,7 @@ public class AiAssistantService {
      * <h3>完整流程（RAG + 工具调用融合）</h3>
      * <pre>
      *   1. 问题向量化 → 检索最像的 4 块资料         （RAG 的"翻小抄"）
+     *   1.5 取最近 5 轮历史对话，拼在 system 之后     （让"那门课"接得上）
      *   2. 把「资料 + 问题 + 工具清单」一起发给模型
      *   3. 模型要么直接回答，要么说"我要调 XXX 工具"
      *   4. 若要工具：带着当前登录身份去查库 → 把结果回传给模型 → 回到第 3 步
@@ -205,9 +229,12 @@ public class AiAssistantService {
                         hit.chunk().id(), hit.chunk().source(), hit.chunk().text(), hit.percent()))
                 .toList());
 
-        // ③ 拼消息：系统提示词 + （参考资料 + 问题）
+        // ③ 拼消息：系统提示词 + 历史对话 + （参考资料 + 问题）
+        // 历史夹在 system 和当前问题之间，顺序必须是「早的在前」——
+        // 模型按时间顺序理解对话，倒着放会把它当"未来发生的事"。
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(AiChatClient.message("system", SYSTEM_PROMPT));
+        appendHistory(messages);
         messages.add(AiChatClient.message("user", buildUserMessage(q, usable)));
 
         List<Map<String, Object>> tools = toolService.definitions();
@@ -334,6 +361,43 @@ public class AiAssistantService {
         }
         sb.append("【问题】\n").append(question);
         return sb.toString();
+    }
+
+    /**
+     * 把最近 {@value #MAX_HISTORY_ROUNDS} 轮对话拼进 messages。
+     *
+     * <p><b>历史从哪来</b>：{@link AiChatHistoryService#recent()}，身份由它从 JWT 里取，
+     * 前端改不了 —— 否则改个 userId 就能把别人的对话喂给模型。
+     *
+     * <p><b>三条裁剪规则，缺一不可</b>：
+     * <ol>
+     *   <li>只取尾巴：recent() 最多返回 50 条，这里只留最近 N 轮（2N 条）</li>
+     *   <li>开头对齐到 user：万一上次调用中途失败，表里会留下"只有提问没有回答"的半截记录，
+     *       直接从中间截会以 assistant 开头，而对话协议要求第一条必须是 user</li>
+     *   <li>单条截断：历史里的长表格对"接住指代"毫无帮助，只会挤占上下文</li>
+     * </ol>
+     *
+     * <p>注意这里<b>只带正文</b>，不带上次的出处和工具轨迹 —— 那些是"当次现场证据"，
+     * 带进来反而会让模型把旧数据当新数据。
+     */
+    private void appendHistory(List<Map<String, Object>> messages) {
+        List<AiChatMessageVO> history = historyService.recent();
+        if (history.isEmpty()) {
+            return;
+        }
+        int from = Math.max(0, history.size() - MAX_HISTORY_ROUNDS * 2);
+        List<AiChatMessageVO> tail = history.subList(from, history.size());
+        int start = 0;
+        while (start < tail.size() && !AiChatHistoryService.ROLE_USER.equals(tail.get(start).getRole())) {
+            start++;
+        }
+        for (AiChatMessageVO msg : tail.subList(start, tail.size())) {
+            String role = AiChatHistoryService.ROLE_USER.equals(msg.getRole()) ? "user" : "assistant";
+            String content = truncate(msg.getContent(), MAX_HISTORY_CHARS);
+            if (StringUtils.hasText(content)) {
+                messages.add(AiChatClient.message(role, content));
+            }
+        }
     }
 
     /** 把模型给的参数 JSON 压成一行摘要，用于前端展示"这次查了什么条件" */

@@ -1,6 +1,6 @@
 package com.online.study.service;
 
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import com.online.study.entity.ForumInteraction;
 import com.online.study.vo.ForumInteractionVO;
 

@@ -3,7 +3,7 @@ package com.online.study.service.impl;
 import com.online.study.entity.Student;
 import com.online.study.mapper.StudentMapper;
 import com.online.study.service.StudentService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 @Service

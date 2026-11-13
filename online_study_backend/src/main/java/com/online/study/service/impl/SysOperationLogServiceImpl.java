@@ -1,6 +1,6 @@
 package com.online.study.service.impl;
 
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.online.study.entity.SysOperationLog;
 import com.online.study.mapper.SysOperationLogMapper;
 import com.online.study.service.SysOperationLogService;

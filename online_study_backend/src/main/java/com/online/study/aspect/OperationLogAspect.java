@@ -1,11 +1,11 @@
 package com.online.study.aspect;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 import com.online.study.annotation.OperationLog;
 import com.online.study.entity.SysOperationLog;
 import com.online.study.service.SysOperationLogService;
@@ -78,9 +78,16 @@ public class OperationLogAspect {
     /** 异常信息落库前的长度上限（对应字段 varchar(500)） */
     private static final int MAX_ERROR_LENGTH = 500;
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
-            .registerModule(new JavaTimeModule())
-            .disable(SerializationFeature.FAIL_ON_EMPTY_BEANS);
+    /**
+     * Jackson 3 的两个变化（相对 2.x）：
+     * 1. 不再需要 registerModule(new JavaTimeModule())：java.time 支持随 SPI 自动装载；
+     * 2. ObjectMapper 变成「不可变」——没有 disable()/configure() 这类改配置的方法了，
+     *    配置必须在构造时通过 JsonMapper.builder() 给出，构造完成后不能再改。
+     *    所以这里是 builder().disable(...).build()，而不是 new ObjectMapper().disable(...)。
+     */
+    private static final ObjectMapper OBJECT_MAPPER = JsonMapper.builder()
+            .disable(SerializationFeature.FAIL_ON_EMPTY_BEANS)
+            .build();
 
     private final SysOperationLogService logService;
 
@@ -219,8 +226,8 @@ public class OperationLogAspect {
         }
         if (node instanceof ObjectNode objectNode) {
             // 先收集字段名再修改，避免遍历过程中修改导致的并发修改异常
-            List<String> fieldNames = new ArrayList<>();
-            objectNode.fieldNames().forEachRemaining(fieldNames::add);
+            // Jackson 3：fieldNames()（Iterator）已移除，改为 propertyNames()（Collection）
+            List<String> fieldNames = new ArrayList<>(objectNode.propertyNames());
 
             for (String name : fieldNames) {
                 JsonNode child = objectNode.get(name);

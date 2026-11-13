@@ -1,7 +1,7 @@
 package com.online.study.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.online.study.common.ResultCode;
 import com.online.study.entity.Course;
 import com.online.study.entity.CourseApply;

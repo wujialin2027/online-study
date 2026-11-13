@@ -14,7 +14,7 @@ import com.online.study.mapper.HomeworkSubmitMapper;
 import com.online.study.service.HomeworkSubmitService;
 import com.online.study.utils.CurrentUserUtil;
 import com.online.study.vo.HomeworkSubmitStatsVO;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 

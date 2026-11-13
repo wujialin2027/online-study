@@ -3,7 +3,7 @@ package com.online.study.service.impl;
 import com.online.study.entity.Score;
 import com.online.study.mapper.ScoreMapper;
 import com.online.study.service.ScoreService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
 
 @Service

@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.5</version>
+        <version>4.1.2</version>
         <relativePath/>
     </parent>
     <groupId>com.online</groupId>
@@ -16,7 +16,7 @@
     <description>Online Study Platform Backend</description>
     <properties>
         <java.version>21</java.version>
-        <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <mybatis-plus.version>3.5.18</mybatis-plus.version>
         <jsqlparser.version>4.9</jsqlparser.version>
         <jjwt.version>0.12.6</jjwt.version>
     </properties>
@@ -37,16 +37,27 @@
         </dependency>
 
         <!-- AOP：操作日志切面（OperationLogAspect）需要 AspectJ 织入能力。
-             starter-aop 会带入 aspectjweaver，并提供自动配置 -->
+             Boot 4 起 starter 改名：spring-boot-starter-aop -> spring-boot-starter-aspectj
+             （Boot 4.1.2 的 spring-boot-dependencies 里已无 aop 这个坐标，写旧名会直接报 version missing） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-aop</artifactId>
+            <artifactId>spring-boot-starter-aspectj</artifactId>
         </dependency>
 
-        <!-- MyBatis-Plus：Boot 3 专用 starter（替代原 mybatis-plus-boot-starter 与 mybatis-spring-boot-starter） -->
+        <!-- MyBatis-Plus：Boot 4 专用 starter（Boot 4 换了 starter 坐标，
+             boot3 版在 Boot 4 上会因自动配置注册方式变化而失效） -->
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
+            <version>${mybatis-plus.version}</version>
+        </dependency>
+        <!-- 分页插件 / 防全表更新插件：MP 3.5.9 起把依赖 jsqlparser 的两个拦截器
+             （PaginationInnerInterceptor、BlockAttackInnerInterceptor）从 extension 拆到独立构件。
+             包名没变，只是 jar 换了位置 —— 不引会报「找不到符号」，但编译期看不出原因。
+             选 -4.9 后缀的版本：它适配 jsqlparser 4.9，与下面显式引入的版本一致。 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser-4.9</artifactId>
             <version>${mybatis-plus.version}</version>
         </dependency>
         <!-- SQL 解析器：分页插件与"防全表更新"插件的底层依赖。
