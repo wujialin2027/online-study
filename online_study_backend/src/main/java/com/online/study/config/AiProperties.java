@@ -72,4 +72,55 @@ public class AiProperties {
         }
         return base + (path.startsWith("/") ? path : "/" + path);
     }
+
+    // ==================== 下面三组：给两个引擎共用的参数 ====================
+
+    /**
+     * RAG 检索参数。
+     *
+     * <p>为什么要把这几个数字从常量搬到配置里：它们是<b>调优对象</b>。
+     * 同一份题集，top-k 从 4 改成 6、阈值从 0.28 改成 0.35，召回率和 token 成本都会变。
+     * 调优时只改 yml 重启，不用改代码重新打包 —— 对应「企业级 = 可配置」。
+     *
+     * <p>默认值与 legacy 引擎里的常量完全一致，否则"两个引擎跑同一份题集"的前提就不成立。
+     */
+    @Data
+    public static class Rag {
+        /** 每次检索取回几个片段 */
+        private int topK = 4;
+        /** 相似度下限，低于它的片段直接丢弃（全被丢时至少保留最相关的一条） */
+        private double minScore = 0.28;
+        /** 切块大小（字） */
+        private int chunkSize = 400;
+        /** 相邻块重叠字数，避免答案正好被切断在两块中间 */
+        private int chunkOverlap = 60;
+        /** 知识库最多保留多少块，防止演示机内存被撑爆 */
+        private int maxChunks = 500;
+    }
+
+    /** 多轮记忆：每次提问带回最近几轮问答（一轮 = 一问一答） */
+    @Data
+    public static class Memory {
+        private int window = 5;
+    }
+
+    /** 工具调用 */
+    @Data
+    public static class Tool {
+        /**
+         * 一次提问最多允许模型调用几次工具。
+         *
+         * <p>和 legacy 的 {@code MAX_TOOL_ROUNDS} 是同一个意思，但口径略有差别：
+         * legacy 限的是"来回几轮"，这里限的是"总共几次调用"。
+         * 一轮里模型要两个工具时，legacy 算 1 次、这里算 2 次 —— 两者都只是护栏，
+         * 目的是防止模型陷入"查了又问、问了又查"的死循环把费用烧光。
+         */
+        private int maxRounds = 5;
+    }
+
+    private Rag rag = new Rag();
+
+    private Memory memory = new Memory();
+
+    private Tool tool = new Tool();
 }

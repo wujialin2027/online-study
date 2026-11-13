@@ -72,11 +72,13 @@ public class AiToolService {
 
     // ==================== 工具名（同时作为日志与前端展示的标识） ====================
 
-    public static final String TOOL_MY_COURSES = "query_my_courses";
-    public static final String TOOL_MY_HOMEWORK = "query_my_homework";
-    public static final String TOOL_MY_SCORES = "query_my_scores";
-    public static final String TOOL_COURSE_STATS = "query_course_homework_stats";
-    public static final String TOOL_COURSE_STUDENTS = "query_course_students";
+    // 名字与描述的唯一出处是 ToolSpecs：spring-ai 引擎那边要把同样的文本写进 @Tool 注解，
+    // 而注解只认编译期常量。两边共用同一份常量，才不会出现"改了一边忘了另一边"。
+    public static final String TOOL_MY_COURSES = ToolSpecs.TOOL_MY_COURSES;
+    public static final String TOOL_MY_HOMEWORK = ToolSpecs.TOOL_MY_HOMEWORK;
+    public static final String TOOL_MY_SCORES = ToolSpecs.TOOL_MY_SCORES;
+    public static final String TOOL_COURSE_STATS = ToolSpecs.TOOL_COURSE_STATS;
+    public static final String TOOL_COURSE_STUDENTS = ToolSpecs.TOOL_COURSE_STUDENTS;
 
     private final CourseMapper courseMapper;
     private final CourseApplyMapper courseApplyMapper;
@@ -111,54 +113,37 @@ public class AiToolService {
     public List<Map<String, Object>> definitions() {
         List<Map<String, Object>> tools = new ArrayList<>();
         if (isStudent()) {
-            tools.add(tool(TOOL_MY_COURSES, "查询当前登录学员自己报名的课程清单，包含课程名称、培训周期、报名审核状态。", Map.of(), List.of()));
-            tools.add(tool(TOOL_MY_HOMEWORK,
-                    "查询当前登录学员自己的作业提交情况：哪些作业已提交、哪些还未提交、各自的截止时间。"
-                            + "当用户问『我还有哪几门作业没交』『我的作业交了吗』这类涉及个人作业数据的问题时调用。",
+            tools.add(tool(TOOL_MY_COURSES, ToolSpecs.DESC_MY_COURSES_STUDENT, Map.of(), List.of()));
+            tools.add(tool(TOOL_MY_HOMEWORK, ToolSpecs.DESC_MY_HOMEWORK,
                     Map.of("courseName", Map.of(
                             "type", "string",
-                            "description", "可选。只查某一门课程时传入课程名（支持部分匹配），例如『Java 基础』。不传则查询全部课程。")),
+                            "description", ToolSpecs.PARAM_COURSE_NAME_OPTIONAL)),
                     List.of()));
-            tools.add(tool(TOOL_MY_SCORES,
-                    "查询当前登录学员自己的课程成绩，包含平时作业分、考试分、总分与教师评语。"
-                            + "当用户问『我考了多少分』『我的成绩怎么样』时调用。",
+            tools.add(tool(TOOL_MY_SCORES, ToolSpecs.DESC_MY_SCORES,
                     Map.of("courseName", Map.of(
                             "type", "string",
-                            "description", "可选。只查某一门课程时传入课程名（支持部分匹配）。不传则查询全部课程。")),
+                            "description", ToolSpecs.PARAM_COURSE_NAME_OPTIONAL_SCORE)),
                     List.of()));
         } else {
-            tools.add(tool(TOOL_MY_COURSES,
-                    "查询当前登录教师自己发布的课程清单（管理员则返回全部课程），包含课程名称、审核状态、报名人数与名额上限。",
+            tools.add(tool(TOOL_MY_COURSES, ToolSpecs.DESC_MY_COURSES_TEACHER,
                     Map.of(), List.of()));
-            tools.add(tool(TOOL_COURSE_STATS,
-                    "查询指定课程的作业提交统计：有多少名学员、每项作业已交人数与未交人数、截止时间。"
-                            + "当教师问『这门课的作业交得怎么样』『提交率多少』时调用。",
+            tools.add(tool(TOOL_COURSE_STATS, ToolSpecs.DESC_COURSE_STATS,
                     Map.of("courseName", Map.of(
                             "type", "string",
-                            "description", "课程名称（支持部分匹配），例如『Java 基础』。")),
+                            "description", ToolSpecs.PARAM_COURSE_NAME_REQUIRED)),
                     List.of("courseName")));
-            tools.add(tool(TOOL_COURSE_STUDENTS,
-                    "查询指定课程的报名学员名单，包含学员姓名、账号与报名审核状态。"
-                            + "当教师问『这门课有多少学生选了』『选课的学生都叫什么名字』『谁报名了』"
-                            + "『有哪些人还在待审核』时调用。教师只能查询自己发布的课程。",
+            tools.add(tool(TOOL_COURSE_STUDENTS, ToolSpecs.DESC_COURSE_STUDENTS,
                     Map.of("courseName", Map.of(
                             "type", "string",
-                            "description", "课程名称（支持部分匹配），例如『Java 基础』。")),
+                            "description", ToolSpecs.PARAM_COURSE_NAME_REQUIRED)),
                     List.of("courseName")));
         }
         return tools;
     }
 
-    /** 工具的中文展示名，用于前端告诉用户"助教刚查了什么" */
+    /** 工具的中文展示名，用于前端告诉用户"助教刚查了什么"（实现见 {@link ToolSpecs#label}） */
     public static String label(String toolName) {
-        return switch (toolName) {
-            case TOOL_MY_COURSES -> "我的课程";
-            case TOOL_MY_HOMEWORK -> "我的作业提交情况";
-            case TOOL_MY_SCORES -> "我的成绩";
-            case TOOL_COURSE_STATS -> "课程作业统计";
-            case TOOL_COURSE_STUDENTS -> "课程学员名单";
-            default -> toolName;
-        };
+        return ToolSpecs.label(toolName);
     }
 
     // ==================== 工具执行 ====================
