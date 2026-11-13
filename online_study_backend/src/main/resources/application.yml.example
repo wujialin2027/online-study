@@ -15,16 +15,28 @@ spring:
       max-file-size: 50MB
       max-request-size: 50MB
   # ===== Spring AI 2.0（P2 引入）=====
-  # 这里刻意只写 model.chat / model.embedding = none，意思是「依赖装了，但自动配置全关」。
+  # 默认「装了依赖但一个自动配置都不启用」：新引擎的客户端在代码里手工装配
+  # （见 SpringAiEngine），走的是下面 ai.api-key / ai.base-url 两个已有配置项。
   #
-  # 为什么不开自动配置：它的开关是全局的，一旦打开，没配 api-key 就会在启动阶段抛异常。
-  # 而走 legacy 引擎的人根本不需要那个 Bean，没道理为了一个用不上的东西先去准备 Key。
-  # 新引擎的客户端因此在代码里手工装配（见 SpringAiEngine），直接用下面 ai.api-key /
-  # ai.base-url 两个已有配置项 —— 同一份地址，两个引擎共用，不存在两套 baseUrl。
+  # ⚠️ 六个开关必须全写 none，少一个都起不来。实测踩过的坑：
+  #   只写 chat / embedding = none 时，OpenAiAudioSpeechAutoConfiguration 仍会装配，
+  #   它拿不到 credential 就抛 "At least one credential source must be specified"，
+  #   整个服务启动失败 —— 报错栈顶在 audio 上，跟你要用的 chat 毫无关系，很难第一眼想到。
+  #   开关全集（2.0.2 实测）：chat / embedding / image / moderation / audio.speech / audio.transcription
+  #
+  # 保留 openai.api-key 是第二道保险：将来 Spring AI 新增某种模型类型、
+  # 而这个文件没跟着加开关时，至少不会因为「缺 credential」直接崩在启动阶段。
   ai:
     model:
       chat: none
       embedding: none
+      image: none
+      moderation: none
+      audio:
+        speech: none
+        transcription: none
+    openai:
+      api-key: ${AI_API_KEY:}
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
