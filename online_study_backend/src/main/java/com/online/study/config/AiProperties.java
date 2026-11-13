@@ -19,6 +19,18 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "ai")
 public class AiProperties {
 
+    /**
+     * 使用的 AI 引擎：{@code legacy}（手写协议层）或 {@code spring-ai}（Spring AI 2.0）。
+     *
+     * <p>切换需要重启，不做运行期热切换 —— 两套引擎的初始化成本不同（Spring AI 要建
+     * ChatModel / VectorStore 等一堆 Bean），热切换要维护两套同时存在的状态，
+     * 收益远小于复杂度。要对比效果就重启换配置，顺序跑两轮评测即可。
+     *
+     * <p>写错（拼写错误）不会让服务起不来，会自动回退 legacy 并打 warn，见
+     * {@code AiAssistantService#pick}。
+     */
+    private String engine = "legacy";
+
     /** 百炼 API Key（形如 sk-xxx）。为空时所有 AI 调用会抛出明确的业务异常 */
     private String apiKey;
 

@@ -1,0 +1,13 @@
+#!C:/Users/21498/.workbuddy/binaries/python/versions/3.13.12/python.exe
+# -*- coding: utf-8 -*-
+"""提交前钩子：交给 redline_check.py 检查暂存区。
+
+这层壳是必要的 —— 钩子脚本一旦因为环境问题（PATH 缺命令、编码不对）报错，
+会把正常提交也挡住。所有逻辑集中在 redline_check.py 一个文件里，两边只调不用改。
+"""
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.exit(subprocess.call([sys.executable, os.path.join(HERE, "redline_check.py"), "staged"]))

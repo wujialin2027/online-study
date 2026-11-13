@@ -37,4 +37,15 @@ public class AiKnowledgeVO {
 
     /** 当前使用的向量模型 code */
     private String embeddingModel;
+
+    /**
+     * 当前生效的 AI 引擎：{@code legacy} 或 {@code spring-ai}。
+     *
+     * <p>为什么要把这个暴露给前端：改造期间同一份评测集要跑两遍，
+     * 如果界面上看不出"这次是谁答的"，新旧对比的结论就无法复核。
+     */
+    private String engine;
+
+    /** 已注册的引擎候选清单（逗号分隔），用于排查"配置写了但实现没被扫描到"的情况 */
+    private String engineCandidates;
 }
