@@ -3,6 +3,7 @@ package com.online.study.config;
 import tools.jackson.databind.ObjectMapper;
 import com.online.study.common.Result;
 import com.online.study.common.ResultCode;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -77,6 +78,13 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                    // ⓪ 异步派发放行（S7 加）。SSE / 异步请求走完业务后，容器会再做一次
+                    //    ASYNC 派发去收尾；Spring Security 6 默认对**所有** DispatcherType 生效，
+                    //    而 JWT 过滤器（OncePerRequestFilter）默认跳过 ASYNC 派发 ——
+                    //    结果就是"上下文是空的 → 走到这里 403"。
+                    //    现象很奇怪：浏览器早就收到 200 和一堆数据了，只有一个 403 日志。
+                    //    异步请求的身份在**第一次**进入时就验过了，收尾这一次不需要再验。
+                    .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                     // ① 公开：登录、注册
                     .requestMatchers("/auth/login", "/auth/register").permitAll()
                     // ② 公开：上传的课件、图片等静态资源（浏览器直接访问，不带 token）

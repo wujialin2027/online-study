@@ -1,6 +1,7 @@
 package com.online.study.ai;
 
 import com.online.study.ai.engine.AiEngine;
+import com.online.study.ai.engine.AiStreamEngine;
 import com.online.study.ai.engine.LegacyAiEngine;
 import com.online.study.common.ResultCode;
 import com.online.study.config.AiProperties;
@@ -113,6 +114,51 @@ public class AiAssistantService {
      * @param question 学生的原话，不需要提炼关键词
      */
     public AiAnswerVO ask(String question) {
+        String q = normalize(question);
+        if (!engine.ready()) {
+            throw new BizException(ResultCode.SYSTEM_ERROR, engine.unavailableReason());
+        }
+        return engine.ask(q);
+    }
+
+    /**
+     * 流式提问（S7）：答案分片到达，前端可以边收边显示。
+     *
+     * <h3>为什么"不支持流式"的引擎不报错，而是整段推一次</h3>
+     * 两个引擎的差别是<b>能力</b>，不是<b>契约</b>：调用方永远只用"收到若干片 → 收到完成"
+     * 这一套协议。legacy 给不出增量，那就把整段答案当一片 —— 前端代码不用写两套，
+     * 切回 {@code ai.engine=legacy} 应急时页面也不会白屏。
+     * 这跟 {@code AiEngine} 的设计一致：换引擎不能让上层改代码。
+     *
+     * <p>校验规则与 {@link #ask} 完全一样（同一份 {@link #normalize}），
+     * 否则同一个问题走流式能过、走非流式被拒，是最难排查的一类不一致。
+     *
+     * @param question 用户原话
+     * @param sink     增量输出出口
+     */
+    public void askStream(String question, AiStreamEngine.StreamSink sink) {
+        String q = normalize(question);
+        if (!engine.ready()) {
+            throw new BizException(ResultCode.SYSTEM_ERROR, engine.unavailableReason());
+        }
+        if (engine instanceof AiStreamEngine streamEngine) {
+            streamEngine.askStream(q, sink);
+            return;
+        }
+
+        // legacy：一次性推完再关（行为等价于老接口，只是通道换成了 SSE）
+        log.info("当前引擎 {} 不支持增量输出，流式请求将一次性推送完整答案", engine.type());
+        AiAnswerVO vo = engine.ask(q);
+        sink.onDelta(vo.getAnswer());
+        sink.onComplete(vo);
+    }
+
+    /**
+     * 两个入口共用的入参规范化：去空白、判空、限长。
+     *
+     * @return 可以直接送进引擎的问题
+     */
+    private static String normalize(String question) {
         if (!StringUtils.hasText(question)) {
             throw new BizException(ResultCode.PARAM_ERROR, "问题不能为空");
         }
@@ -121,10 +167,7 @@ public class AiAssistantService {
             throw new BizException(ResultCode.PARAM_ERROR,
                     "问题过长，请控制在 " + MAX_QUESTION_CHARS + " 字以内");
         }
-        if (!engine.ready()) {
-            throw new BizException(ResultCode.SYSTEM_ERROR, engine.unavailableReason());
-        }
-        return engine.ask(q);
+        return q;
     }
 
     /**

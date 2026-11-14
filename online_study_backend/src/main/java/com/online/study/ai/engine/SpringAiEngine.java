@@ -37,19 +37,36 @@ import org.springframework.util.StringUtils;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * spring-ai 引擎 —— 用 Spring AI 2.0 的 ChatClient 重写后的链路。
  *
- * <h3>当前在第几步（S6）</h3>
- * <b>检索 + 工具调用 + 多轮记忆，三块齐了</b>：问题向量化 → 找最像的 4 块资料 →
- * 连同工具清单交给模型 → 模型自己决定"翻小抄"还是"查数据库" → 出答案。
- * 至此新引擎的功能面已经追上 legacy，剩下的只有口径差异（见下）。
+ * <h3>当前在第几步（S7）</h3>
+ * <b>检索 + 工具调用 + 多轮记忆 + 流式输出，四块齐了</b>：问题向量化 → 找最像的 4 块资料 →
+ * 连同工具清单交给模型 → 模型自己决定"翻小抄"还是"查数据库" → 边生成边往浏览器推字。
  *
- * <p>预期分数应当<b>追平 legacy 的 88% 一档</b>：前面每一步都是"补回一块能力"，
- * S3 纯对话 10%、S4 加工具 58%、S5 加记忆 59%，缺的那 30 个点就在检索上
- * （25 条失败里 24 条是"课件里怎么写的"这类知识题）。
- * 如果这次没追上，说明差异不在"有没有检索"，而在"检索怎么用"（提示词拼装顺序、
+ * <h3>S7 的取舍：流式只换"运输方式"，不换"生产流程"</h3>
+ * 流式最容易犯的错是为了"能边出字"把整条链路重写一遍（检索、提示词、记忆各写一份），
+ * 结果两条链路慢慢分叉：非流式修了 bug，流式没修；两边的分数也对不上。
+ * 所以这里把"准备阶段"抽成 {@link #prepare(String)}（灌库 + 检索 + 历史 + 工具对象 + VO 骨架），
+ * 两种输出方式<b>共用同一份准备结果</b>，差别只在最后那一步是 {@code .call()} 还是 {@code .stream()}。
+ *
+ * <p>三条实现细节：
+ * <ul>
+ *   <li><b>用 {@code .stream().chatResponse()} 而不是 {@code .stream().content()}</b>：
+ *       前者每片还带着 metadata（含 token 用量），后者只有字符串。</li>
+ *   <li><b>一片都没吐出去就失败 → 降级成一次性回答</b>（见 {@link #askStream}）。
+ *       已经吐了一半再失败只能报错 —— 重发会让用户看到两段接不上的答案。</li>
+ *   <li><b>落库仍等整轮结束</b>：流式过程中往 {@code ai_chat_message} 写半截答案，
+ *       用户中途关页面就会在历史里留下残缺记录。</li>
+ * </ul>
+ *
+ * <p><b>S6 的验证状态</b>：落库/重启不丢已实测（重启后日志「向量库已从数据库加载：106 块」）；
+ * 检索层用只打向量接口的探针验过（知识类 17/22 命中）。<b>60 题全量没跑</b> ——
+ * 对话模型免费额度用尽，等充值后随 S8 一起跑，届时才有和 legacy 88% 的正式对照。
+ * 若对不上，说明差异不在"有没有检索"，而在"检索怎么用"（提示词拼装顺序、
  * 阈值过滤、低置信兜底），要逐条对比 {@link LegacyAiEngine#ask} 的同一段逻辑。
  *
  * <h3>S6 的取舍：检索结果不过模型，但过阈值</h3>
@@ -110,7 +127,7 @@ import java.util.List;
  */
 @Slf4j
 @Component
-public class SpringAiEngine implements AiEngine {
+public class SpringAiEngine implements AiEngine, AiStreamEngine {
 
     /** 引擎标识，与 {@code ai.engine} 配置值一致 */
     public static final String TYPE = "spring-ai";
@@ -196,6 +213,152 @@ public class SpringAiEngine implements AiEngine {
 
     @Override
     public AiAnswerVO ask(String question) {
+        return generate(prepare(question), question);
+    }
+
+    /**
+     * 非流式生成：拿一份已经准备好的上下文，调一次模型，落库，返回完整结果。
+     *
+     * <p>单独抽出来是为了给流式做<b>降级</b>用：流式一片都没吐出去就失败时，
+     * 直接拿同一份 {@link Prepared} 再走一遍非流式，而不是重新 {@code prepare} ——
+     * 重新准备意味着再调一次向量接口（检索要钱、要时间），而这些结果本来就没变。
+     */
+    private AiAnswerVO generate(Prepared prep, String question) {
+        try {
+
+            ChatResponse response = prep.client().prompt()
+                    // 历史在前、本轮问题在后。顺序不能反 —— 对话协议要求最后一条是 user，
+                    // 反了等于让模型"先答再问"。
+                    .messages(prep.history())
+                    // 参考资料拼进用户消息（不是 system）：资料属于"这一次的现场证据"，
+                    // 而 system 是整场对话立下的规矩，两者混在一起会让模型把旧资料当规矩
+                    .user(prep.userMessage())
+                    // 按角色给工具清单：学员手里根本没有教师工具（见两个 Tools 类的注释）
+                    .tools(prep.functions())
+                    .call()
+                    .chatResponse();
+
+            String answer = extractText(response);
+            AiAnswerVO vo = prep.vo();
+            vo.setAnswer(StringUtils.hasText(answer)
+                    ? answer
+                    : "抱歉，这次没能整理出完整答案。可以换个说法再问一次。");
+            vo.setUsedTools(prep.functions().traces());
+            fillTokens(vo, response);
+
+            // 落库：等整轮问答成功后才写两条。
+            // 顺序很重要 —— 先 record(user) 再 record(assistant)，
+            // 且只在拿到答案之后写，避免模型中途失败时表里留下"只有提问没有回答"的孤儿消息。
+            // record() 内部自己吞异常：记不上只影响回放，不能让用户连答案都拿不到。
+            recordHistory(question, vo.getAnswer());
+
+            log.info("spring-ai 引擎问答完成：参考资料 {} 块，带入历史 {} 条，工具调用 {} 次，prompt={}，completion={}",
+                    prep.usable().size(), prep.history().size(), vo.getUsedTools().size(),
+                    vo.getPromptTokens(), vo.getCompletionTokens());
+            return vo;
+        } catch (Exception e) {
+            log.error("spring-ai 引擎调用失败（model={}）", props.getChatModel(), e);
+            throw new BizException(ResultCode.SYSTEM_ERROR,
+                    "AI 服务暂时不可用：" + rootMessage(e) + "。可临时把 ai.engine 改回 legacy 应急。");
+        }
+    }
+
+    /**
+     * 流式回答（S7）。
+     *
+     * <p>生产流程与 {@link #ask} <b>完全一致</b>（同一份 {@link #prepare} 结果），
+     * 只有最后一步从 {@code .call()} 换成 {@code .stream()}。
+     *
+     * <p><b>失败处理分两种情况</b>：
+     * <ul>
+     *   <li><b>还没吐过任何字符</b>（连不上、Key 错、模型拒答）：降级调一次 {@code ask()}，
+     *       把整段答案当一片推出去。对用户来说只是"慢了一点"，不是"坏了"。</li>
+     *   <li><b>已经吐了一半</b>：只能发错误。重发会让页面上出现两段接不上的答案，
+     *       用户分不清哪段是真的 —— 宁可报错让他重问。</li>
+     * </ul>
+     *
+     * <p><b>为什么用 {@code blockLast()} 而不是全程响应式</b>：这条链路是"阻塞式 Servlet 模型"，
+     * 线程由 {@code aiStreamExecutor} 提供。改成纯响应式要一路把 Controller 换成 WebFlux，
+     * 为一个接口不值得。{@code blockLast()} 在这里的作用只是"把 Flux 拉成一个循环"。
+     */
+    @Override
+    public void askStream(String question, StreamSink sink) {
+        Prepared prep = prepare(question);
+
+        // 出处此时已确定：先推一拍上下文，前端可以把引用列表和"正在输入…"一起渲染出来
+        sink.onMeta(prep.vo());
+
+        StringBuilder collected = new StringBuilder();
+        AtomicBoolean emitted = new AtomicBoolean(false);
+        AtomicReference<Usage> lastUsage = new AtomicReference<>();
+
+        try {
+            prep.client().prompt()
+                    .messages(prep.history())
+                    .user(prep.userMessage())
+                    .tools(prep.functions())
+                    .stream()
+                    // chatResponse() 而不是 content()：每一片还带 metadata，
+                    // 最后一片里有 token 用量，content() 会把它们丢掉。
+                    .chatResponse()
+                    .doOnNext(chunk -> {
+                        String delta = extractText(chunk);
+                        if (StringUtils.hasText(delta)) {
+                            collected.append(delta);
+                            emitted.set(true);
+                            // 先推给调用方再记日志：推字的先后顺序就是用户看到的顺序
+                            sink.onDelta(delta);
+                        }
+                        Usage usage = usageOf(chunk);
+                        if (usage != null) {
+                            lastUsage.set(usage);
+                        }
+                    })
+                    .blockLast();
+        } catch (Exception e) {
+            log.error("spring-ai 流式调用失败（model={}，已输出 {} 字）",
+                    props.getChatModel(), collected.length(), e);
+            if (emitted.get()) {
+                sink.onError(e);
+                return;
+            }
+            // 一片都没出去 —— 降级成一次性回答（复用同一份 prep，不再重复检索）
+            try {
+                AiAnswerVO fallback = generate(prep, question);
+                sink.onDelta(fallback.getAnswer());
+                sink.onComplete(fallback);
+            } catch (Exception inner) {
+                sink.onError(inner);
+            }
+            return;
+        }
+
+        AiAnswerVO vo = prep.vo();
+        String text = collected.toString();
+        vo.setAnswer(StringUtils.hasText(text)
+                ? text
+                : "抱歉，这次没能整理出完整答案。可以换个说法再问一次。");
+        vo.setUsedTools(prep.functions().traces());
+        // 流式下 token 只能拿到"最后一片"的 metadata，与 ask() 同一个口径（见 fillTokens 注释）
+        fillTokens(vo, lastUsage.get());
+
+        // 落库仍等整轮结束：中途写半截答案会在历史里留下残缺记录
+        recordHistory(question, vo.getAnswer());
+
+        log.info("spring-ai 流式问答完成：参考资料 {} 块，带入历史 {} 条，工具调用 {} 次，输出 {} 字",
+                prep.usable().size(), prep.history().size(), vo.getUsedTools().size(), text.length());
+        sink.onComplete(vo);
+    }
+
+    /**
+     * 准备阶段：两种输出方式共用的那一段（流式改造时抽出来的）。
+     *
+     * <p>顺序<b>必须</b>与原 {@code ask()} 一致，否则两边的分数差异就说不清来源：
+     * 取客户端 → 空库则灌库 → 建工具对象 → 建 VO 骨架 → 检索 → 读历史 → 拼用户消息。
+     *
+     * @return 一份不可变的准备结果，交给 {@code .call()} 或 {@code .stream()}
+     */
+    private Prepared prepare(String question) {
         ChatClient client = client();
 
         // 懒加载灌库：只有库里一块都没有时才触发（通常是第一次部署、或手动清了表）。
@@ -228,45 +391,30 @@ public class SpringAiEngine implements AiEngine {
                         hit.chunk().id(), hit.chunk().source(), hit.chunk().text(), hit.percent()))
                 .toList());
 
-        try {
-            // 历史在本次提问<b>之前</b>读，所以不含本轮 —— 本轮的问答在成功之后才落库
-            List<Message> history = loadHistoryMessages();
+        // 历史在本次提问<b>之前</b>读，所以不含本轮 —— 本轮的问答在成功之后才落库
+        List<Message> history = loadHistoryMessages();
 
-            ChatResponse response = client.prompt()
-                    // 历史在前、本轮问题在后。顺序不能反 —— 对话协议要求最后一条是 user，
-                    // 反了等于让模型"先答再问"。
-                    .messages(history)
-                    // 参考资料拼进用户消息（不是 system）：资料属于"这一次的现场证据"，
-                    // 而 system 是整场对话立下的规矩，两者混在一起会让模型把旧资料当规矩
-                    .user(buildUserMessage(question, usable))
-                    // 按角色给工具清单：学员手里根本没有教师工具（见两个 Tools 类的注释）
-                    .tools(functions)
-                    .call()
-                    .chatResponse();
+        return new Prepared(client, functions, usable, history,
+                buildUserMessage(question, usable), vo);
+    }
 
-            String answer = extractText(response);
-            vo.setAnswer(StringUtils.hasText(answer)
-                    ? answer
-                    : "抱歉，这次没能整理出完整答案。可以换个说法再问一次。");
-            vo.setUsedTools(functions.traces());
-            fillTokens(vo, response);
+    /**
+     * 一次问答的准备结果。
+     * <p>字段全部在构造时定好、之后不再改，所以两种输出方式各拿一份也不会互相干扰
+     * （{@code vo} 是可变的，但每次 {@code prepare} 都新建，不存在共用）。
+     */
+    private record Prepared(ChatClient client,
+                            AbstractToolFunctions functions,
+                            List<DbVectorStore.SearchHit> usable,
+                            List<Message> history,
+                            String userMessage,
+                            AiAnswerVO vo) {
+    }
 
-            // 落库：等整轮问答成功后才写两条。
-            // 顺序很重要 —— 先 record(user) 再 record(assistant)，
-            // 且只在拿到答案之后写，避免模型中途失败时表里留下"只有提问没有回答"的孤儿消息。
-            // record() 内部自己吞异常：记不上只影响回放，不能让用户连答案都拿不到。
-            historyService.record(AiChatHistoryService.ROLE_USER, question);
-            historyService.record(AiChatHistoryService.ROLE_ASSISTANT, vo.getAnswer());
-
-            log.info("spring-ai 引擎问答完成：参考资料 {} 块，带入历史 {} 条，工具调用 {} 次，prompt={}，completion={}",
-                    usable.size(), history.size(), vo.getUsedTools().size(),
-                    vo.getPromptTokens(), vo.getCompletionTokens());
-        } catch (Exception e) {
-            log.error("spring-ai 引擎调用失败（model={}）", props.getChatModel(), e);
-            throw new BizException(ResultCode.SYSTEM_ERROR,
-                    "AI 服务暂时不可用：" + rootMessage(e) + "。可临时把 ai.engine 改回 legacy 应急。");
-        }
-        return vo;
+    /** 落库两条：先提问后回答。失败只打日志，不影响用户拿答案（见 {@code record} 内部实现） */
+    private void recordHistory(String question, String answer) {
+        historyService.record(AiChatHistoryService.ROLE_USER, question);
+        historyService.record(AiChatHistoryService.ROLE_ASSISTANT, answer);
     }
 
     /**
@@ -421,17 +569,26 @@ public class SpringAiEngine implements AiEngine {
      * 这个差异写在这里，是为了避免以后看到"spring-ai 的 token 忽然变少了"就去改代码。
      */
     private static void fillTokens(AiAnswerVO vo, ChatResponse response) {
+        fillTokens(vo, usageOf(response));
+    }
+
+    /** 从任意一片 {@link ChatResponse} 里取用量；没有就返回 null（流式下只有最后一片带） */
+    private static Usage usageOf(ChatResponse response) {
+        if (response == null || response.getMetadata() == null) {
+            return null;
+        }
+        return response.getMetadata().getUsage();
+    }
+
+    private static void fillTokens(AiAnswerVO vo, Usage usage) {
         int prompt = 0;
         int completion = 0;
-        if (response != null && response.getMetadata() != null) {
-            Usage usage = response.getMetadata().getUsage();
-            if (usage != null) {
-                if (usage.getPromptTokens() != null) {
-                    prompt = usage.getPromptTokens();
-                }
-                if (usage.getCompletionTokens() != null) {
-                    completion = usage.getCompletionTokens();
-                }
+        if (usage != null) {
+            if (usage.getPromptTokens() != null) {
+                prompt = usage.getPromptTokens();
+            }
+            if (usage.getCompletionTokens() != null) {
+                completion = usage.getCompletionTokens();
             }
         }
         vo.setPromptTokens(prompt);

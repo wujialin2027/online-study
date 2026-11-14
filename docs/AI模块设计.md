@@ -1,45 +1,58 @@
 # AI 智能助教模块设计
 
 > 本文说明「智能助教」的设计决策与实现，供后续维护与技术评审时参考。
-> 代码位置：`online_study_backend/src/main/java/com/online/study/ai/`（8 个类）。
+> 代码位置：`online_study_backend/src/main/java/com/online/study/ai/`（含 `engine/` 子包）。
+>
+> **版本说明**：第 2 节的"手写而不上框架"是 2026-09 上线版的决策，保留作为历史与对照；
+> 2026-11 的改造另起一套 Spring AI 2.0 引擎（见第 3 节），两套并存、按 `ai.engine` 切换。
 
 ---
 
 ## 1. 目标
 
-在不引入任何 AI 框架的前提下，为平台实现一个基于业务数据的智能助教：
+为平台实现一个基于业务数据的智能助教：
 
 1. **知识库问答（RAG）**：学员问"集合框架讲什么"，助教基于平台内的课程/作业/资源内容回答；
 2. **业务查询（Function Calling）**：学员问"我还有几次作业没交"，助教调用后端查询接口拿真实数据回答；
 3. **角色感知**：同一个问题，学员和教师看到的答案不同（学员只看自己的数据）。
 
-## 2. 关键设计决策：为什么手写而不上框架
+## 2. 第一版的关键决策：为什么手写而不上框架
 
 | 备选 | 结论 | 原因 |
 |---|---|---|
-| Spring AI | ❌ 不用 | 1.0.0 GA 要求 Spring Boot 3.4+，项目是 3.3.5，强行升级风险大 |
+| Spring AI | ❌ 当时不用 | 1.0.0 GA 要求 Spring Boot 3.4+，项目是 3.3.5，强行升级风险大 |
 | LangChain | ❌ 不用 | Python 生态，与 Java 后端不同进程，引入跨语言调用复杂度 |
 | 阿里云托管知识库 | ❌ 不用 | 数据要出域，且无法自定义检索与工具逻辑 |
 | **RestClient 直连大模型 + 自研向量库** | ✅ 采用 | 完全掌控每一环节，也是理解 RAG 原理的最佳方式 |
+
 
 **与框架的对应关系**：LangChain/Spring AI 里的 ChatClient、Embeddings、TextSplitter、
 VectorStore、Agent 五类组件，在本模块中分别由 `AiChatClient`、`AiEmbeddingClient`、
 `DbVectorStore.splitIntoChunks()`、`DbVectorStore`、`AiAssistantService`
 工具循环手工实现。模型本身调用百炼平台的 OpenAI 兼容端点，协议不变。
 
-## 3. 模块结构（8 个类）
+## 3. 模块结构
+
+改造后按「引擎可切换 + 组件共用」组织：**两套引擎实现同一个接口**，配置 `ai.engine` 选一个，
+检索、工具、历史、向量库这些组件两边共用 —— 换引擎只换"编排方式"，不换"数据与工具"。
 
 | 类 | 职责 |
 |---|---|
-| `AiAssistantService` | 编排入口：检索 → 组装提示词 → 工具循环 → 生成答案、对话落库 |
+| `AiEngine` | 引擎接口：`type / ready / unavailableReason / ask`。身份不从参数传，实现内部从 JWT 取 |
+| `LegacyAiEngine` | 手写协议层那套（`AiChatClient` + 手工工具循环），保留作对照与降级 |
+| `SpringAiEngine` | Spring AI 2.0 版：ChatClient + ToolCallingAdvisor + 多轮记忆 + RAG |
+| `AiStreamEngine` | 流式能力接口（可选能力，单独一个接口，legacy 不实现） |
+| `AiAssistantService` | 门面：入参校验 → 按配置选引擎 → 转调；灌库与状态查询留在这里 |
 | `AiChatClient` | 对话模型 HTTP 客户端（RestClient 直连 `/chat/completions`，含工具协议解析） |
 | `AiEmbeddingClient` | 向量模型 HTTP 客户端（`text-embedding-v4`） |
 | `DbVectorStore` | 向量库：切块、余弦相似度检索；向量落 `ai_vector_chunk` 表，启动时加载（**重启不丢**） |
 | `VectorChunkStore` | 向量持久化：整表替换写入、读出并反序列化（短事务，不横跨网络调用） |
 | `KnowledgeChunk` / `SearchHit` | 知识块与检索命中（含分数） |
 | `KnowledgeIngestService` | 知识入库：收集库内数据 + 手工资料 → 切块 → 向量化 → 灌库 |
-| `AiToolService` | 工具清单定义与执行（查作业、查课程学员等） |
+| `AiToolService` / `ToolSpecs` | 工具清单定义与执行（查作业、查课程学员等）；工具名与描述的唯一出处 |
+| `StudentToolFunctions` / `TeacherToolFunctions` | 按角色拆的两组 `@Tool` 导入类：学员对象上物理没有教师工具 |
 | `AiChatHistoryService` | 对话历史持久化（`ai_chat_message` 表） |
+| `AiStreamConfig` | 流式问答专用线程池（与 Web 线程隔离，慢问答不拖垮整站） |
 
 ## 4. RAG 全链路
 
@@ -88,11 +101,38 @@ VectorStore、Agent 五类组件，在本模块中分别由 `AiChatClient`、`Ai
 2. 工具清单按角色裁剪 —— 学员的工具集里根本没有"查全体学员"这类能力；
 3. 工具返回值经服务端整理后再进消息链，不把原始 SQL 结果直接暴露给模型拼答案。
 
-## 7. 已知限制与规划
+## 7. 流式输出（SSE）
 
-| 限制 | 规划 |
+`POST /ai/ask/stream` 与 `POST /ai/ask` 入参完全相同，响应改成 `text/event-stream`，
+**老接口一个字节没动** —— 前端不迁移也能继续用。
+
+事件序列：
+
+```
+event: meta    {model, chunkCount, hitCount, sources}      检索完成、还没开始生成时先发一次
+event: delta   {"text":"这门课的"}                          重复 N 次
+event: delta   {"text":"作业要求是…"}
+event: done    {完整 AiAnswerVO：answer/sources/usedTools/token}
+data:  [DONE]                                              结束哨兵
+```
+
+四个关键取舍：
+
+| 问题 | 做法 | 原因 |
+|---|---|---|
+| delta 发裸文本还是 JSON | JSON | SSE 的 `data:` 按行切分，模型输出里的换行会把一条事件劈成两条 |
+| 线程放哪 | 单独的 `aiStreamExecutor` | 一次问答占线程几秒到几十秒，共用 Web 线程池会被几条慢请求吃光 |
+| 异步线程怎么拿到身份 | `DelegatingSecurityContextExecutor` 包一层 | 工具靠 `CurrentUserUtil` 读 `SecurityContextHolder`（ThreadLocal），换线程就读不到 |
+| 流到一半失败怎么办 | 一片都没发 → 降级成非流式；已发了一半 → 报错 | 重发会让页面出现两段接不上的答案 |
+
+另外两处容易被漏掉的配置：SSE 必须显式设超时（默认落回容器 30 秒，带工具循环的问答不够用），
+Spring Security 6 必须放行 `DispatcherType.ASYNC`（否则异步收尾那一次派发会被判 403）。
+
+## 8. 已知限制与规划
+
+| 限制 | 现状 / 规划 |
 |---|---|
-| 向量库在内存，重启即空 | 引入持久化存储（如 PGVector） |
-| 纯向量检索，专有名词召回弱 | 混合检索（向量 + 关键词 BM25）+ 重排序 |
-| 答案不标出处 | 引用溯源：检索时保留 source，答案标注来源 |
-| 无效果评估 | 建立评测集，度量召回率与回答忠实度 |
+| 纯向量检索，专有名词召回弱 | 待做混合检索（向量 + 关键词）；2G 内存装不下 ES，只能走 MySQL FULLTEXT |
+| 单机单进程，日额度计数在内存 | 扩成多实例时换成 Redis `INCR` + `EXPIRE`，调用方不用改 |
+| 流式接口暂无前端页面消费 | 后端已验证可推送；前端接入排在最后（先保接口与非流式页面稳定） |
+| 效果评估靠独立工具 | 已建 60 题评测集与红队集（见 `llm-eval-kit`），不放在本项目里 |
