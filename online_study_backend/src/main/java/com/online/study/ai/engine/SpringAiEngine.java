@@ -1,6 +1,7 @@
 package com.online.study.ai.engine;
 
 import com.online.study.ai.AbstractToolFunctions;
+import com.online.study.ai.AiChatHistoryService;
 import com.online.study.ai.AiToolService;
 import com.online.study.ai.InMemoryVectorStore;
 import com.online.study.ai.StudentToolFunctions;
@@ -10,6 +11,7 @@ import com.online.study.config.AiProperties;
 import com.online.study.exception.BizException;
 import com.online.study.utils.CurrentUserUtil;
 import com.online.study.vo.AiAnswerVO;
+import com.online.study.vo.AiChatMessageVO;
 import com.openai.client.OpenAIClient;
 import com.openai.client.OpenAIClientImpl;
 import com.openai.core.ClientOptions;
@@ -17,6 +19,9 @@ import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.model.tool.DefaultToolCallingManager;
@@ -29,21 +34,44 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * spring-ai 引擎 —— 用 Spring AI 2.0 的 ChatClient 重写后的链路。
  *
- * <h3>当前在第几步（S4）</h3>
- * <b>纯对话 + 工具调用</b>：系统提示词 + 用户问题 → 模型若需要查库就自己调工具 → 给出回答。
+ * <h3>当前在第几步（S5）</h3>
+ * <b>纯对话 + 工具调用 + 多轮记忆</b>：系统提示词 + 历史对话 + 本轮问题 → 模型自己决定要不要查库。
  * 还差的一块是刻意留空的，不是漏了：
  * <ul>
  *   <li><b>检索</b>（S6）：要先把向量库换成可落库的实现，否则接上了也得重启重灌</li>
  * </ul>
  *
- * <p>所以这一步跑 60 题，分数会比 S3 的 10% 明显回升（工具类问题能答了），
- * 但仍然<b>低于</b> legacy 的 88% —— 因为涉及"课件里怎么写的"那类问题还得靠检索。
+ * <p>所以这一步跑 60 题，总分仍会<b>低于</b> legacy 的 88% —— 因为"课件里怎么写的"
+ * 那类问题还得靠检索；但<b>多轮</b>那一栏应该从 S4 的 67% 追到接近 legacy 的水平。
  * 每补一块回头量一次，才看得出每块各自值多少分。
+ *
+ * <h3>S5 的取舍：为什么不用 {@code MessageWindowChatMemory}</h3>
+ * Spring AI 自带一套记忆抽象（{@code ChatMemory} + {@code ChatMemoryRepository} +
+ * {@code MessageChatMemoryAdvisor}），看起来"应该"用它。这里没用，理由三条：
+ * <ol>
+ *   <li><b>记忆的真相在数据库，不在内存。</b>本项目要求换设备登录还能看到自己的历史、
+ *       能清空、能审计（{@code ai_chat_message} 表）。框架的默认实现是
+ *       {@code InMemoryChatMemoryRepository} —— 重启即丢，对一个"要能演示、要能回放"
+ *       的系统来说等于没有。</li>
+ *   <li><b>要落库就得写一个 {@code ChatMemoryRepository} 适配层，而这个适配层有个坑：</b>
+ *       {@code saveAll(conversationId, messages)} 每次传的是<b>整个窗口</b>，
+ *       而表里只该存"用户提问 + 最终回答"两条。工具循环过程中还有
+ *       {@code AssistantMessage(toolCalls)} 这类中间消息，它们不该进历史表
+ *       （否则回放时页面上会出现一堆空消息）。要在适配层里按类型过滤，
+ *       逻辑量已经超过"自己算窗口"。</li>
+ *   <li><b>要和 legacy 逐题可比。</b>legacy 的记忆策略是三条裁剪规则
+ *       （取尾巴 / 对齐到 user / 单条截断），这里照抄同一套，
+ *       两边的多轮分数差异才只由"引擎"解释，而不是"记忆实现不同"。</li>
+ * </ol>
+ * 结论：{@code props.getMemory().getWindow()} 轮 × 2 条，直接从表里取、
+ * 转成 {@link Message} 显式传给 {@code ChatClient.messages(...)}。
+ * 框架的记忆抽象适合"没有持久层、只在一台机器上跑"的场景，本项目不属于那种场景。
  *
  * <h3>S4 的关键点：工具怎么进来</h3>
  * <pre>
@@ -85,6 +113,13 @@ public class SpringAiEngine implements AiEngine {
      */
     private static final double TEMPERATURE = 0.2;
 
+    /**
+     * 历史单条截断长度，与 legacy 的 {@code MAX_HISTORY_CHARS} 一致。
+     * <p>历史里的长表格对"接住指代"（把上一句的"它""那门课"指回具体对象）毫无帮助，
+     * 只挤占上下文预算，所以每条只留开头 300 字。
+     */
+    private static final int MAX_HISTORY_CHARS = 300;
+
     private final AiProperties props;
     private final InMemoryVectorStore vectorStore;
 
@@ -94,16 +129,25 @@ public class SpringAiEngine implements AiEngine {
      */
     private final AiToolService toolService;
 
+    /**
+     * 对话记录。两个引擎共用同一个 Service、同一张表 ——
+     * 这是"换引擎不能换掉用户的历史"的直接体现：切回 legacy 后，
+     * 用户在 spring-ai 模式下问过的话还在，模型接得上。
+     */
+    private final AiChatHistoryService historyService;
+
     /** 懒加载出来的客户端；volatile + 双重检查，避免并发首次提问时重复构造 */
     private volatile ChatClient chatClient;
 
     /** 构造失败的原因，用于把"为什么用不了"直接讲给用户听 */
     private volatile String buildError;
 
-    public SpringAiEngine(AiProperties props, InMemoryVectorStore vectorStore, AiToolService toolService) {
+    public SpringAiEngine(AiProperties props, InMemoryVectorStore vectorStore, AiToolService toolService,
+                          AiChatHistoryService historyService) {
         this.props = props;
         this.vectorStore = vectorStore;
         this.toolService = toolService;
+        this.historyService = historyService;
     }
 
     @Override
@@ -139,13 +183,19 @@ public class SpringAiEngine implements AiEngine {
         vo.setModel(props.getChatModel());
         vo.setChunkCount(vectorStore.size());
         vo.setKnowledgeEmpty(vectorStore.isEmpty());
-        // S4 仍没接检索：命中数 0、出处空。
-        // 这两个字段留空而不是省略，是为了让前端拿到的结构在 S4/S6 之间保持一致。
+        // 仍没接检索（S6）：命中数 0、出处空。
+        // 这两个字段留空而不是省略，是为了让前端拿到的结构在 S5/S6 之间保持一致。
         vo.setHitCount(0);
         vo.setSources(List.of());
 
         try {
+            // 历史在本次提问<b>之前</b>读，所以不含本轮 —— 本轮的问答在成功之后才落库
+            List<Message> history = loadHistoryMessages();
+
             ChatResponse response = client.prompt()
+                    // 历史在前、本轮问题在后。顺序不能反 —— 对话协议要求最后一条是 user，
+                    // 反了等于让模型"先答再问"。
+                    .messages(history)
                     .user(question)
                     // 按角色给工具清单：学员手里根本没有教师工具（见两个 Tools 类的注释）
                     .tools(functions)
@@ -158,8 +208,16 @@ public class SpringAiEngine implements AiEngine {
                     : "抱歉，这次没能整理出完整答案。可以换个说法再问一次。");
             vo.setUsedTools(functions.traces());
             fillTokens(vo, response);
-            log.info("spring-ai 引擎问答完成：工具调用 {} 次，prompt={}，completion={}",
-                    vo.getUsedTools().size(), vo.getPromptTokens(), vo.getCompletionTokens());
+
+            // 落库：等整轮问答成功后才写两条。
+            // 顺序很重要 —— 先 record(user) 再 record(assistant)，
+            // 且只在拿到答案之后写，避免模型中途失败时表里留下"只有提问没有回答"的孤儿消息。
+            // record() 内部自己吞异常：记不上只影响回放，不能让用户连答案都拿不到。
+            historyService.record(AiChatHistoryService.ROLE_USER, question);
+            historyService.record(AiChatHistoryService.ROLE_ASSISTANT, vo.getAnswer());
+
+            log.info("spring-ai 引擎问答完成：带入历史 {} 条，工具调用 {} 次，prompt={}，completion={}",
+                    history.size(), vo.getUsedTools().size(), vo.getPromptTokens(), vo.getCompletionTokens());
         } catch (Exception e) {
             log.error("spring-ai 引擎调用失败（model={}）", props.getChatModel(), e);
             throw new BizException(ResultCode.SYSTEM_ERROR,
@@ -179,6 +237,66 @@ public class SpringAiEngine implements AiEngine {
         return "student".equals(CurrentUserUtil.getRole())
                 ? new StudentToolFunctions(toolService)
                 : new TeacherToolFunctions(toolService);
+    }
+
+    /**
+     * 取最近 {@code ai.memory.window} 轮对话，转成 Spring AI 的 {@link Message} 列表。
+     *
+     * <p>三条裁剪规则与 legacy 的 {@code appendHistory} <b>逐条对齐</b> —— 这不是巧合：
+     * 两边用不同实现跑同一份 60 题，记忆策略必须等价，否则多轮分数差就说不清
+     * 到底是"引擎换了"还是"记忆口径变了"。
+     * <ol>
+     *   <li><b>取尾巴</b>：{@code recent()} 最多 50 条，这里只留最近 window 轮（2×window 条）</li>
+     *   <li><b>开头对齐到 user</b>：上次调用中途失败会在表里留下"只有提问、没有回答"的半截记录。
+     *       直接从中间截会得到一条以 assistant 开头的列表，而对话协议要求第一条是 user</li>
+     *   <li><b>单条截断</b>：见 {@link #MAX_HISTORY_CHARS}</li>
+     * </ol>
+     *
+     * <p>只带正文，<b>不带</b>上次的出处与工具轨迹 —— 那些是"当次现场证据"。
+     * 带进历史会让模型把上一次查到的旧数字当成这一次的事实，多轮里最容易出这种错。
+     *
+     * <p>读历史失败<b>不影响问答</b>：降级成"没有历史"继续问，只打一行 warn。
+     * 记忆是锦上添花，不该变成单点故障。
+     */
+    private List<Message> loadHistoryMessages() {
+        int window = Math.max(1, props.getMemory().getWindow());
+        try {
+            List<AiChatMessageVO> history = historyService.recent();
+            if (history == null || history.isEmpty()) {
+                return List.of();
+            }
+            int from = Math.max(0, history.size() - window * 2);
+            List<AiChatMessageVO> tail = history.subList(from, history.size());
+
+            int start = 0;
+            while (start < tail.size()
+                    && !AiChatHistoryService.ROLE_USER.equals(tail.get(start).getRole())) {
+                start++;
+            }
+
+            List<Message> messages = new ArrayList<>(tail.size() - start);
+            for (AiChatMessageVO msg : tail.subList(start, tail.size())) {
+                String text = truncate(msg.getContent(), MAX_HISTORY_CHARS);
+                if (!StringUtils.hasText(text)) {
+                    continue;
+                }
+                messages.add(AiChatHistoryService.ROLE_USER.equals(msg.getRole())
+                        ? new UserMessage(text)
+                        : new AssistantMessage(text));
+            }
+            return messages;
+        } catch (Exception e) {
+            log.warn("读取对话历史失败，本次按无历史处理：{}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** 超长截断；null 一律当空串，避免 null 混进消息体 */
+    private static String truncate(String text, int max) {
+        if (text == null) {
+            return "";
+        }
+        return text.length() <= max ? text : text.substring(0, max) + "…（已截断）";
     }
 
     /** 取回答正文；任何一环为 null 都安全返回 null，由调用方给兜底话术 */
