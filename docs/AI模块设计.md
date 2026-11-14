@@ -1,6 +1,6 @@
 # AI 智能助教模块设计
 
-> 本文说明「智能助教」的设计决策与实现，可作为面试深挖时的参考材料。
+> 本文说明「智能助教」的设计决策与实现，供后续维护与技术评审时参考。
 > 代码位置：`online_study_backend/src/main/java/com/online/study/ai/`（8 个类）。
 
 ---
@@ -24,7 +24,7 @@
 
 **与框架的对应关系**：LangChain/Spring AI 里的 ChatClient、Embeddings、TextSplitter、
 VectorStore、Agent 五类组件，在本模块中分别由 `AiChatClient`、`AiEmbeddingClient`、
-`InMemoryVectorStore.splitIntoChunks()`、`InMemoryVectorStore`、`AiAssistantService`
+`DbVectorStore.splitIntoChunks()`、`DbVectorStore`、`AiAssistantService`
 工具循环手工实现。模型本身调用百炼平台的 OpenAI 兼容端点，协议不变。
 
 ## 3. 模块结构（8 个类）
@@ -34,7 +34,8 @@ VectorStore、Agent 五类组件，在本模块中分别由 `AiChatClient`、`Ai
 | `AiAssistantService` | 编排入口：检索 → 组装提示词 → 工具循环 → 生成答案、对话落库 |
 | `AiChatClient` | 对话模型 HTTP 客户端（RestClient 直连 `/chat/completions`，含工具协议解析） |
 | `AiEmbeddingClient` | 向量模型 HTTP 客户端（`text-embedding-v4`） |
-| `InMemoryVectorStore` | 内存向量库：切块、存储、余弦相似度检索 |
+| `DbVectorStore` | 向量库：切块、余弦相似度检索；向量落 `ai_vector_chunk` 表，启动时加载（**重启不丢**） |
+| `VectorChunkStore` | 向量持久化：整表替换写入、读出并反序列化（短事务，不横跨网络调用） |
 | `KnowledgeChunk` / `SearchHit` | 知识块与检索命中（含分数） |
 | `KnowledgeIngestService` | 知识入库：收集库内数据 + 手工资料 → 切块 → 向量化 → 灌库 |
 | `AiToolService` | 工具清单定义与执行（查作业、查课程学员等） |
@@ -44,15 +45,18 @@ VectorStore、Agent 五类组件，在本模块中分别由 `AiChatClient`、`Ai
 
 ```
 课程/作业/资源数据（MySQL）─┐
-手工补充资料 ──────────────┤
+手工补充资料（ai_knowledge_doc）┤
                           ▼
               KnowledgeIngestService.rebuildAll()
               收集 → 切块(splitIntoChunks) → 向量化(text-embedding-v4)
                           ▼
-                  InMemoryVectorStore（内存）
+              DbVectorStore ──写库──→ ai_vector_chunk（真相）
+                    │ 启动时读一次
+                    ▼
+              进程内 List（索引/缓存）
                           ▼ 用户提问
-              1. 问题向量化 → 余弦相似度检索 Top-K
-              2. 命中块拼进 System 提示词（要求"只依据资料回答"）
+              1. 问题向量化 → 余弦相似度检索 Top-K，按 min-score 过滤
+              2. 命中块拼进用户消息（要求"只依据资料回答"）
               3. 调对话模型生成答案
 ```
 

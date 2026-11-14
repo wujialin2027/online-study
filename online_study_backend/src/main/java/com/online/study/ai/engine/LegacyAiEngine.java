@@ -4,7 +4,7 @@ import com.online.study.ai.AiChatClient;
 import com.online.study.ai.AiChatHistoryService;
 import com.online.study.ai.AiEmbeddingClient;
 import com.online.study.ai.AiToolService;
-import com.online.study.ai.InMemoryVectorStore;
+import com.online.study.ai.DbVectorStore;
 import com.online.study.ai.KnowledgeIngestService;
 import com.online.study.common.ResultCode;
 import com.online.study.config.AiProperties;
@@ -26,7 +26,7 @@ import java.util.Map;
  * <h3>一次提问发生了什么</h3>
  * <pre>
  *   1. 把学生的问题转成向量        → AiEmbeddingClient
- *   2. 在向量库里找最像的 4 块资料  → InMemoryVectorStore（余弦相似度排序）
+ *   2. 在向量库里找最像的 4 块资料  → DbVectorStore（余弦相似度排序）
  *   3. 把「资料 + 问题 + 工具清单」交给大模型 → AiChatClient
  *   4. 模型要查数据时执行工具、回传结果再问一轮 → AiToolService
  *   5. 返回答案 + 资料出处 + 工具轨迹 → AiAnswerVO
@@ -110,7 +110,7 @@ public class LegacyAiEngine implements AiEngine {
      * 结论定了再回填到 {@link EnginePrompts}。
      */
 
-    private final InMemoryVectorStore vectorStore;
+    private final DbVectorStore vectorStore;
     private final AiEmbeddingClient embeddingClient;
     private final AiChatClient chatClient;
     private final KnowledgeIngestService ingestService;
@@ -118,7 +118,7 @@ public class LegacyAiEngine implements AiEngine {
     private final AiProperties props;
     private final AiChatHistoryService historyService;
 
-    public LegacyAiEngine(InMemoryVectorStore vectorStore,
+    public LegacyAiEngine(DbVectorStore vectorStore,
                           AiEmbeddingClient embeddingClient,
                           AiChatClient chatClient,
                           KnowledgeIngestService ingestService,
@@ -188,13 +188,13 @@ public class LegacyAiEngine implements AiEngine {
         vo.setKnowledgeEmpty(vectorStore.isEmpty());
 
         // ①② 检索（问题向量化 + 余弦相似度 top-k，都在 vectorStore 内部完成）
-        List<InMemoryVectorStore.SearchHit> hits = vectorStore.isEmpty()
+        List<DbVectorStore.SearchHit> hits = vectorStore.isEmpty()
                 ? List.of()
                 : vectorStore.search(q, TOP_K);
 
         // 过滤掉相似度太低的片段；若全被过滤掉但确实有结果，至少保留最相关的一条供模型判断
-        List<InMemoryVectorStore.SearchHit> usable = new ArrayList<>();
-        for (InMemoryVectorStore.SearchHit hit : hits) {
+        List<DbVectorStore.SearchHit> usable = new ArrayList<>();
+        for (DbVectorStore.SearchHit hit : hits) {
             if (hit.score() >= MIN_SCORE) {
                 usable.add(hit);
             }
@@ -322,7 +322,7 @@ public class LegacyAiEngine implements AiEngine {
      * <p>为什么把资料放在问题前面：模型对提示词末尾的内容注意力更强，
      * 结尾放问题能让它聚焦在"要回答什么"，而不是被资料带跑。
      */
-    private String buildUserMessage(String question, List<InMemoryVectorStore.SearchHit> hits) {
+    private String buildUserMessage(String question, List<DbVectorStore.SearchHit> hits) {
         StringBuilder sb = new StringBuilder();
         sb.append("【参考资料】\n");
         if (hits.isEmpty()) {
@@ -330,7 +330,7 @@ public class LegacyAiEngine implements AiEngine {
         }
         int used = 0;
         int index = 1;
-        for (InMemoryVectorStore.SearchHit hit : hits) {
+        for (DbVectorStore.SearchHit hit : hits) {
             String text = hit.chunk().text();
             if (used + text.length() > MAX_CONTEXT_CHARS && index > 1) {
                 break;

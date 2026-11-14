@@ -3,7 +3,8 @@ package com.online.study.ai.engine;
 import com.online.study.ai.AbstractToolFunctions;
 import com.online.study.ai.AiChatHistoryService;
 import com.online.study.ai.AiToolService;
-import com.online.study.ai.InMemoryVectorStore;
+import com.online.study.ai.DbVectorStore;
+import com.online.study.ai.KnowledgeIngestService;
 import com.online.study.ai.StudentToolFunctions;
 import com.online.study.ai.TeacherToolFunctions;
 import com.online.study.common.ResultCode;
@@ -40,16 +41,23 @@ import java.util.List;
 /**
  * spring-ai 引擎 —— 用 Spring AI 2.0 的 ChatClient 重写后的链路。
  *
- * <h3>当前在第几步（S5）</h3>
- * <b>纯对话 + 工具调用 + 多轮记忆</b>：系统提示词 + 历史对话 + 本轮问题 → 模型自己决定要不要查库。
- * 还差的一块是刻意留空的，不是漏了：
- * <ul>
- *   <li><b>检索</b>（S6）：要先把向量库换成可落库的实现，否则接上了也得重启重灌</li>
- * </ul>
+ * <h3>当前在第几步（S6）</h3>
+ * <b>检索 + 工具调用 + 多轮记忆，三块齐了</b>：问题向量化 → 找最像的 4 块资料 →
+ * 连同工具清单交给模型 → 模型自己决定"翻小抄"还是"查数据库" → 出答案。
+ * 至此新引擎的功能面已经追上 legacy，剩下的只有口径差异（见下）。
  *
- * <p>所以这一步跑 60 题，总分仍会<b>低于</b> legacy 的 88% —— 因为"课件里怎么写的"
- * 那类问题还得靠检索；但<b>多轮</b>那一栏应该从 S4 的 67% 追到接近 legacy 的水平。
- * 每补一块回头量一次，才看得出每块各自值多少分。
+ * <p>预期分数应当<b>追平 legacy 的 88% 一档</b>：前面每一步都是"补回一块能力"，
+ * S3 纯对话 10%、S4 加工具 58%、S5 加记忆 59%，缺的那 30 个点就在检索上
+ * （25 条失败里 24 条是"课件里怎么写的"这类知识题）。
+ * 如果这次没追上，说明差异不在"有没有检索"，而在"检索怎么用"（提示词拼装顺序、
+ * 阈值过滤、低置信兜底），要逐条对比 {@link LegacyAiEngine#ask} 的同一段逻辑。
+ *
+ * <h3>S6 的取舍：检索结果不过模型，但过阈值</h3>
+ * 向量检索<b>总会</b>返回 top-k 条，哪怕库里根本没有相关内容 —— 那也是"最像的 4 条"。
+ * 所以必须按相似度筛一遍（{@code ai.rag.min-score}，默认 0.28），
+ * 否则相似度 0.1 的无关片段会被塞进提示词，模型照着它编答案，比"没有资料"更糟。
+ * 全被筛掉时保留最相关的一条并打日志，而不是一条都不给：
+ * 一条低分资料 + 严格的"没写就说没有"提示词，效果优于"完全没有资料"（后者模型倾向自由发挥）。
  *
  * <h3>S5 的取舍：为什么不用 {@code MessageWindowChatMemory}</h3>
  * Spring AI 自带一套记忆抽象（{@code ChatMemory} + {@code ChatMemoryRepository} +
@@ -120,8 +128,21 @@ public class SpringAiEngine implements AiEngine {
      */
     private static final int MAX_HISTORY_CHARS = 300;
 
+    /**
+     * 送进提示词的资料总量上限（字符），与 legacy 的 {@code MAX_CONTEXT_CHARS} 一致。
+     * <p>4 块 × 400 字本身就在 1600 字上下，这个上限真正的作用是防"某份资料的块特别长"
+     * （手工补的长讲义），避免单个问题把上下文预算吃光。
+     */
+    private static final int MAX_CONTEXT_CHARS = 4000;
+
     private final AiProperties props;
-    private final InMemoryVectorStore vectorStore;
+    private final DbVectorStore vectorStore;
+
+    /**
+     * 知识入库服务。只在"第一次提问、向量库还是空的"时候用一次 —— 与 legacy 一致，
+     * 懒加载灌库，不让服务一启动就调几十次向量接口（没人用 AI 的时候不该花这笔钱）。
+     */
+    private final KnowledgeIngestService ingestService;
 
     /**
      * 工具的真正实现。两个引擎共用同一个实例 —— 换个引擎不能让"查数据库"这件事换一套逻辑，
@@ -142,12 +163,13 @@ public class SpringAiEngine implements AiEngine {
     /** 构造失败的原因，用于把"为什么用不了"直接讲给用户听 */
     private volatile String buildError;
 
-    public SpringAiEngine(AiProperties props, InMemoryVectorStore vectorStore, AiToolService toolService,
-                          AiChatHistoryService historyService) {
+    public SpringAiEngine(AiProperties props, DbVectorStore vectorStore, AiToolService toolService,
+                          AiChatHistoryService historyService, KnowledgeIngestService ingestService) {
         this.props = props;
         this.vectorStore = vectorStore;
         this.toolService = toolService;
         this.historyService = historyService;
+        this.ingestService = ingestService;
     }
 
     @Override
@@ -176,6 +198,20 @@ public class SpringAiEngine implements AiEngine {
     public AiAnswerVO ask(String question) {
         ChatClient client = client();
 
+        // 懒加载灌库：只有库里一块都没有时才触发（通常是第一次部署、或手动清了表）。
+        // 注意 S6 之后这里已经不会"每次重启都灌一遍"了 —— 向量存在 ai_vector_chunk 里，
+        // 启动时由 DbVectorStore 读进内存，只有首次提问 + 空库才真的调向量接口。
+        if (vectorStore.isEmpty()) {
+            try {
+                int count = ingestService.rebuildAll();
+                log.info("首次提问触发自动灌库，共 {} 块", count);
+            } catch (Exception e) {
+                // 灌库失败不中断本次问答：纯数据类问题（"我还有哪几门作业没交"）
+                // 靠工具就能答，不依赖向量库，没必要让整个请求失败
+                log.warn("自动灌库失败，本次对话将不带参考资料", e);
+            }
+        }
+
         // 每次问答新建一个工具对象：它带着"本次调过哪些工具"的轨迹，不能跨请求共用
         AbstractToolFunctions functions = toolFunctions();
 
@@ -183,10 +219,14 @@ public class SpringAiEngine implements AiEngine {
         vo.setModel(props.getChatModel());
         vo.setChunkCount(vectorStore.size());
         vo.setKnowledgeEmpty(vectorStore.isEmpty());
-        // 仍没接检索（S6）：命中数 0、出处空。
-        // 这两个字段留空而不是省略，是为了让前端拿到的结构在 S5/S6 之间保持一致。
-        vo.setHitCount(0);
-        vo.setSources(List.of());
+
+        // ①② 检索 + 过滤（逻辑与 legacy 的同一段一一对应，原因见类注释「S6 的取舍」）
+        List<DbVectorStore.SearchHit> usable = retrieve(question);
+        vo.setHitCount(usable.size());
+        vo.setSources(usable.stream()
+                .map(hit -> AiAnswerVO.Source.of(
+                        hit.chunk().id(), hit.chunk().source(), hit.chunk().text(), hit.percent()))
+                .toList());
 
         try {
             // 历史在本次提问<b>之前</b>读，所以不含本轮 —— 本轮的问答在成功之后才落库
@@ -196,7 +236,9 @@ public class SpringAiEngine implements AiEngine {
                     // 历史在前、本轮问题在后。顺序不能反 —— 对话协议要求最后一条是 user，
                     // 反了等于让模型"先答再问"。
                     .messages(history)
-                    .user(question)
+                    // 参考资料拼进用户消息（不是 system）：资料属于"这一次的现场证据"，
+                    // 而 system 是整场对话立下的规矩，两者混在一起会让模型把旧资料当规矩
+                    .user(buildUserMessage(question, usable))
                     // 按角色给工具清单：学员手里根本没有教师工具（见两个 Tools 类的注释）
                     .tools(functions)
                     .call()
@@ -216,8 +258,9 @@ public class SpringAiEngine implements AiEngine {
             historyService.record(AiChatHistoryService.ROLE_USER, question);
             historyService.record(AiChatHistoryService.ROLE_ASSISTANT, vo.getAnswer());
 
-            log.info("spring-ai 引擎问答完成：带入历史 {} 条，工具调用 {} 次，prompt={}，completion={}",
-                    history.size(), vo.getUsedTools().size(), vo.getPromptTokens(), vo.getCompletionTokens());
+            log.info("spring-ai 引擎问答完成：参考资料 {} 块，带入历史 {} 条，工具调用 {} 次，prompt={}，completion={}",
+                    usable.size(), history.size(), vo.getUsedTools().size(),
+                    vo.getPromptTokens(), vo.getCompletionTokens());
         } catch (Exception e) {
             log.error("spring-ai 引擎调用失败（model={}）", props.getChatModel(), e);
             throw new BizException(ResultCode.SYSTEM_ERROR,
@@ -237,6 +280,68 @@ public class SpringAiEngine implements AiEngine {
         return "student".equals(CurrentUserUtil.getRole())
                 ? new StudentToolFunctions(toolService)
                 : new TeacherToolFunctions(toolService);
+    }
+
+    /**
+     * 检索 + 阈值过滤。
+     *
+     * <p>与 legacy 的同一段<b>等价</b>，只有一处刻意的差别：top-k 与阈值读配置
+     * （{@code ai.rag.top-k} / {@code ai.rag.min-score}），而 legacy 读类里的常量。
+     * 两边的默认值相同（4 / 0.28），所以跑同一份题集结论可比；
+     * 但调优时只需要改 yml 重启，不用改 legacy 代码重新打包。
+     *
+     * <p>全被阈值筛掉时保留最相关的一条 —— 见类注释「S6 的取舍」。
+     */
+    private List<DbVectorStore.SearchHit> retrieve(String question) {
+        if (vectorStore.isEmpty()) {
+            return List.of();
+        }
+        AiProperties.Rag rag = props.getRag();
+        List<DbVectorStore.SearchHit> hits = vectorStore.search(question, rag.getTopK());
+
+        List<DbVectorStore.SearchHit> usable = new ArrayList<>();
+        for (DbVectorStore.SearchHit hit : hits) {
+            if (hit.score() >= rag.getMinScore()) {
+                usable.add(hit);
+            }
+        }
+        if (usable.isEmpty() && !hits.isEmpty()) {
+            usable.add(hits.get(0));
+            log.info("问题「{}」的检索相似度偏低（最高 {}%），只保留最相关的一条", question, hits.get(0).percent());
+        }
+        return usable;
+    }
+
+    /**
+     * 拼用户消息：参考资料在前、问题在后。
+     *
+     * <p>为什么资料在前、问题在后：模型对提示词<b>末尾</b>的内容注意力更强，
+     * 结尾放问题能让它聚焦"要回答什么"，而不是被资料带着跑。
+     *
+     * <p>这段拼装与 legacy 的 {@code buildUserMessage} 逐字等价（含分隔符与"相似度"标注）——
+     * 提示词一改，两个引擎的分数差异就说不清是引擎的功劳还是提示词的改动了。
+     */
+    private static String buildUserMessage(String question, List<DbVectorStore.SearchHit> hits) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("【参考资料】\n");
+        if (hits.isEmpty()) {
+            sb.append("（本次没有检索到相关参考资料。如果这个问题涉及你的个人数据，请调用工具查询。）\n");
+        }
+        int used = 0;
+        int index = 1;
+        for (DbVectorStore.SearchHit hit : hits) {
+            String text = hit.chunk().text();
+            if (used + text.length() > MAX_CONTEXT_CHARS && index > 1) {
+                break;
+            }
+            used += text.length();
+            sb.append('[').append(index).append("] 来源：").append(hit.chunk().source())
+                    .append("（相似度 ").append(hit.percent()).append("%）\n")
+                    .append(text).append("\n\n");
+            index++;
+        }
+        sb.append("【问题】\n").append(question);
+        return sb.toString();
     }
 
     /**

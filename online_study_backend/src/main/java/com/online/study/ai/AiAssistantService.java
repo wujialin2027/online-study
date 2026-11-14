@@ -55,12 +55,12 @@ public class AiAssistantService {
     /** 启动时按 {@code ai.engine} 选定，运行期不变 —— 切引擎要重启，这是刻意的（见类注释） */
     private final AiEngine engine;
 
-    private final InMemoryVectorStore vectorStore;
+    private final DbVectorStore vectorStore;
     private final KnowledgeIngestService ingestService;
     private final AiProperties props;
 
     public AiAssistantService(List<AiEngine> engines,
-                              InMemoryVectorStore vectorStore,
+                              DbVectorStore vectorStore,
                               KnowledgeIngestService ingestService,
                               AiProperties props) {
         this.engines = engines;
