@@ -250,7 +250,7 @@ public class SpringAiEngine implements AiEngine, AiStreamEngine {
             // 顺序很重要 —— 先 record(user) 再 record(assistant)，
             // 且只在拿到答案之后写，避免模型中途失败时表里留下"只有提问没有回答"的孤儿消息。
             // record() 内部自己吞异常：记不上只影响回放，不能让用户连答案都拿不到。
-            recordHistory(question, vo.getAnswer());
+            recordHistory(question, vo);
 
             log.info("spring-ai 引擎问答完成：参考资料 {} 块，带入历史 {} 条，工具调用 {} 次，prompt={}，completion={}",
                     prep.usable().size(), prep.history().size(), vo.getUsedTools().size(),
@@ -342,8 +342,9 @@ public class SpringAiEngine implements AiEngine, AiStreamEngine {
         // 流式下 token 只能拿到"最后一片"的 metadata，与 ask() 同一个口径（见 fillTokens 注释）
         fillTokens(vo, lastUsage.get());
 
-        // 落库仍等整轮结束：中途写半截答案会在历史里留下残缺记录
-        recordHistory(question, vo.getAnswer());
+        // 落库仍等整轮结束：中途写半截答案会在历史里留下残缺记录。
+        // 此时 vo 里 token 已由 fillTokens 填好，落库顺带把成本口径记下来。
+        recordHistory(question, vo);
 
         log.info("spring-ai 流式问答完成：参考资料 {} 块，带入历史 {} 条，工具调用 {} 次，输出 {} 字",
                 prep.usable().size(), prep.history().size(), vo.getUsedTools().size(), text.length());
@@ -411,10 +412,18 @@ public class SpringAiEngine implements AiEngine, AiStreamEngine {
                             AiAnswerVO vo) {
     }
 
-    /** 落库两条：先提问后回答。失败只打日志，不影响用户拿答案（见 {@code record} 内部实现） */
-    private void recordHistory(String question, String answer) {
-        historyService.record(AiChatHistoryService.ROLE_USER, question);
-        historyService.record(AiChatHistoryService.ROLE_ASSISTANT, answer);
+    /**
+     * 落库两条：先提问后回答。失败只打日志，不影响用户拿答案（见 {@code record} 内部实现）。
+     *
+     * <p>收 {@link AiAnswerVO} 而不是只收答案字符串：engine / model / token 都在 VO 里，
+     * 传 VO 免得再拆成四个参数。token 只写 assistant 行 —— 这一轮累计的输入 token
+     * 已经把提问算在里面，两边都写等于同一个问题收两次费。
+     */
+    private void recordHistory(String question, AiAnswerVO vo) {
+        historyService.record(AiChatHistoryService.ROLE_USER, question,
+                type(), vo.getModel(), 0, 0);
+        historyService.record(AiChatHistoryService.ROLE_ASSISTANT, vo.getAnswer(),
+                type(), vo.getModel(), vo.getPromptTokens(), vo.getCompletionTokens());
     }
 
     /**

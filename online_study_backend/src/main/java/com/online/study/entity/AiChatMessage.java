@@ -35,5 +35,27 @@ public class AiChatMessage {
     /** 消息正文 */
     private String content;
 
+    /**
+     * 生成这条消息的引擎：{@code legacy} / {@code spring-ai}。
+     *
+     * <p>user 行（用户提问）也可能带这个值 —— 记录的是"这个问题交给哪套引擎处理的"。
+     * 历史数据为 null，看板里归成「未记录」。
+     */
+    private String engine;
+
+    /** 使用的对话模型 code，如 {@code deepseek-v4.1-flash-1017}。换模型时成本口径会变，必须分开存 */
+    private String model;
+
+    /**
+     * 本次问答的输入 token（仅 assistant 行有效，user 行固定 0）。
+     *
+     * <p>为什么 user 行不记：一轮问答的输入 token 已经把用户问题算在里面了，
+     * 两边都记等于把同一个问题算两遍，成本会凭空翻倍。
+     */
+    private Integer promptTokens;
+
+    /** 本次问答的输出 token（仅 assistant 行有效） */
+    private Integer completionTokens;
+
     private Date createTime;
 }

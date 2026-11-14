@@ -123,4 +123,36 @@ public class AiProperties {
     private Memory memory = new Memory();
 
     private Tool tool = new Tool();
+
+    /**
+     * 计价参数 —— 把 token 换算成钱。
+     *
+     * <h3>为什么必须做成配置，不能写死</h3>
+     * 单价是<b>外部事实</b>，不是代码逻辑：服务商调价、换模型、换档位，这三个数字都要变。
+     * 写死在代码里意味着"调一次价改一次代码重新打包"，而且改的地方藏在业务逻辑中间，
+     * 下次谁来接手都不知道成本是从哪算出来的。
+     *
+     * <p>配置化之后，换模型只需在 yml 里改三个数重启，代码一行不动 ——
+     * 这正是「企业级 = 可配置」最朴素的一条。
+     *
+     * <h3>单位为什么按「每百万 token」</h3>
+     * 服务商报价单就是这个口径（如"输入 2 元/百万 token"），照抄不用换算，
+     * 核对报价时一眼能对上。内部计算时再除以一百万，误差可忽略。
+     *
+     * <h3>值不准怎么办</h3>
+     * 默认值只是量级参考，真正报预算前应当去控制台核对当期价格。
+     * 看板上的成本是<b>估算</b>，单位与单价都随接口返回，前端要标明"估算"
+     * 而不是当成账单 —— 账单永远以服务商侧为准。
+     */
+    @Data
+    public static class Pricing {
+        /** 币种，随接口返回，避免前端写死符号 */
+        private String currency = "CNY";
+        /** 输入（prompt）每百万 token 单价 */
+        private double inputPerMillion = 2.0;
+        /** 输出（completion）每百万 token 单价 */
+        private double outputPerMillion = 8.0;
+    }
+
+    private Pricing pricing = new Pricing();
 }

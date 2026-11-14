@@ -2,6 +2,7 @@ package com.online.study.controller;
 
 import com.online.study.ai.AiAssistantService;
 import com.online.study.ai.AiChatHistoryService;
+import com.online.study.ai.AiUsageService;
 import com.online.study.ai.KnowledgeIngestService;
 import com.online.study.ai.engine.AiStreamEngine;
 import com.online.study.annotation.OperationLog;
@@ -15,6 +16,7 @@ import com.online.study.utils.DailyQuota;
 import com.online.study.vo.AiAnswerVO;
 import com.online.study.vo.AiChatMessageVO;
 import com.online.study.vo.AiKnowledgeVO;
+import com.online.study.vo.AiUsageVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
@@ -26,6 +28,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import tools.jackson.databind.ObjectMapper;
@@ -49,6 +52,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   POST   /ai/knowledge/rebuild   重建知识库（管理员 / 教师）
  *   POST   /ai/knowledge/doc       补充一份文字资料（管理员 / 教师）
  *   POST   /ai/knowledge/doc/clear 清空手工补充的资料（管理员 / 教师）
+ *   GET    /ai/usage               成本看板：token 用量与估算费用（管理员 / 教师）
  * </pre>
  *
  * <h3>权限设计</h3>
@@ -93,12 +97,16 @@ public class AiAssistantController {
     private final QuotaProperties quota;
     private final DailyQuota dailyQuota;
 
+    /** 成本看板：token 用量与估算费用聚合 */
+    private final AiUsageService usageService;
+
     public AiAssistantController(AiAssistantService assistantService,
                                  KnowledgeIngestService ingestService,
                                  AiChatHistoryService historyService,
                                  @Qualifier(AiStreamConfig.EXECUTOR_BEAN) ThreadPoolTaskExecutor streamPool,
                                  QuotaProperties quota,
-                                 DailyQuota dailyQuota) {
+                                 DailyQuota dailyQuota,
+                                 AiUsageService usageService) {
         this.assistantService = assistantService;
         this.ingestService = ingestService;
         this.historyService = historyService;
@@ -111,6 +119,7 @@ public class AiAssistantController {
         this.streamExecutor = new DelegatingSecurityContextExecutor(streamPool);
         this.quota = quota;
         this.dailyQuota = dailyQuota;
+        this.usageService = usageService;
     }
 
     /** 知识库状态：前端用它渲染页面顶部的资料状态条 */
@@ -355,5 +364,24 @@ public class AiAssistantController {
     public Result<AiKnowledgeVO> clearDocs() {
         int count = ingestService.clearExtraDocs();
         return Result.success("已清空补充资料，当前知识库共 " + count + " 个知识块", assistantService.status());
+    }
+
+    /**
+     * 成本看板：最近 N 天的 token 用量与估算费用，按天 / 引擎 / 模型三种维度返回。
+     *
+     * <p>参数：{@code days} 统计天数，默认 30，上限 365（见 {@code AiUsageService#summary}）。
+     *
+     * <p><b>为什么要限管理员 / 教师</b>：这个接口返回的是<b>全平台</b>汇总，
+     * 不是"我的用量"——里面能看出整个站点被问了多少次、烧了多少钱。
+     * 学员看自己那份在 {@code /ai/history} 里，不需要也不应该看到全局账。
+     *
+     * <p><b>为什么返回估算值还要标"估算"</b>：服务商的实际计费含缓存命中、
+     * 阶梯价、免费额度抵扣，本地只能算出"按配置单价的线性折算"。
+     * 把口径写在返回体里（{@code note} 字段），看的人就不会把估算当账单。
+     */
+    @GetMapping("/usage")
+    @PreAuthorize("hasAnyRole('ADMIN','TEACHER')")
+    public Result<AiUsageVO> usage(@RequestParam(value = "days", required = false) Integer days) {
+        return Result.success(usageService.summary(days));
     }
 }

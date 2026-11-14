@@ -78,6 +78,12 @@ ai:
   # 工具调用：一次提问最多来回几轮
   tool:
     max-rounds: 5
+  # 成本看板计价（S9-1）：token → 钱的折算单价，按「每百万 token」计。
+  # 占位默认值只是量级参考，报预算前请核对服务商当期价格；看板上的成本是估算值。
+  pricing:
+    currency: ${AI_PRICE_CURRENCY:CNY}
+    input-per-million: ${AI_PRICE_INPUT:2.0}
+    output-per-million: ${AI_PRICE_OUTPUT:8.0}
 
 # 自助注册开关（默认 true 开放）。
 # 注意：开放注册时，服务端**只放行「学员」角色** —— 教师能建课 / 发作业 / 传课件，

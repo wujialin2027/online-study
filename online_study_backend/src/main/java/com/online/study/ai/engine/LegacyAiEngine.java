@@ -274,8 +274,13 @@ public class LegacyAiEngine implements AiEngine {
         // 不提前记"用户提问"是为了避免出现半截记录 —— 如果模型调用中途失败，
         // 表里会留下一条只有问题、没有答案的孤儿消息，回放时看起来像页面坏了。
         // record() 内部自己吞异常，落库失败不影响用户拿到答案。
-        historyService.record(AiChatHistoryService.ROLE_USER, q);
-        historyService.record(AiChatHistoryService.ROLE_ASSISTANT, answer);
+        //
+        // token 只记在 assistant 行：这一轮累计的输入 token 已经把提问算在里面，
+        // 两边都记等于同一个问题收两次费（成本看板会翻倍）。
+        historyService.record(AiChatHistoryService.ROLE_USER, q,
+                type(), props.getChatModel(), 0, 0);
+        historyService.record(AiChatHistoryService.ROLE_ASSISTANT, answer,
+                type(), props.getChatModel(), promptTokens, completionTokens);
 
         if (lowConfidence) {
             log.info("问题「{}」的检索相似度偏低（最高 {}%），回答可能不够准确", q, hits.get(0).percent());

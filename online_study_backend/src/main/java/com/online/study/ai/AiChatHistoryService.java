@@ -66,8 +66,20 @@ public class AiChatHistoryService {
      *
      * <p>刻意<b>不抛异常</b>：记不上只是"这次没留痕"，不该让用户连答案都拿不到。
      * 所以内部捕获并只打一行 warn，调用方（{@link AiAssistantService#ask}）无感。
+     *
+     * @param role            消息角色，{@link #ROLE_USER} 或 {@link #ROLE_ASSISTANT}
+     * @param content         消息正文
+     * @param engine          生成这条消息的引擎（legacy / spring-ai），null 表示未记录
+     * @param model           对话模型 code，null 表示未记录
+     * @param promptTokens    输入 token；user 行传 0（见下）
+     * @param completionTokens 输出 token；user 行传 0
      */
-    public void record(String role, String content) {
+    public void record(String role,
+                       String content,
+                       String engine,
+                       String model,
+                       Integer promptTokens,
+                       Integer completionTokens) {
         String userRole = CurrentUserUtil.getRole();
         Integer userId = CurrentUserUtil.getId();
         if (userRole == null || userId == null || content == null || content.isBlank()) {
@@ -79,6 +91,11 @@ public class AiChatHistoryService {
             message.setUserId(userId);
             message.setRole(role);
             message.setContent(content);
+            message.setEngine(engine);
+            message.setModel(model);
+            // 数据库这两列是 NOT NULL DEFAULT 0，显式兜住 null，免得留空值让聚合 SUM 出意外
+            message.setPromptTokens(promptTokens == null ? 0 : promptTokens);
+            message.setCompletionTokens(completionTokens == null ? 0 : completionTokens);
             message.setCreateTime(new Date());
             mapper.insert(message);
 
