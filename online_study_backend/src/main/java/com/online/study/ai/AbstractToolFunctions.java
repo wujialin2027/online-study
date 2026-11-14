@@ -2,6 +2,9 @@ package com.online.study.ai;
 
 import com.online.study.vo.AiAnswerVO;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
@@ -32,6 +35,22 @@ import java.util.function.Supplier;
  * {@code traces} 记录本次问答调过哪些工具。ChatClient 是全局单例（构造一次反复用），
  * 但工具对象<b>不能</b>共用 —— 两人同时提问，轨迹会混到一起。所以由
  * {@code SpringAiEngine#ask} 每次 new 一个，问答结束即丢弃，天然不串。
+ *
+ * <h3>为什么还要在工具对象里"携带身份"</h3>
+ * {@link AiToolService} 判断"我是谁"靠 {@link com.online.study.utils.CurrentUserUtil}，
+ * 而它读的是 {@code SecurityContextHolder} 的 <b>ThreadLocal</b>。
+ * 同步问答时调用链一直在请求线程上，读得到；<b>但流式不行</b> ——
+ * 工具是 Spring AI 在生成过程中回调的，执行线程已经不是当初提交任务的那个线程，
+ * ThreadLocal 是空的。现象极具迷惑性：
+ * <pre>
+ *   学员提问 → 模型答"你当前登录的是教师账号"，或"该工具只对学员开放"
+ *   而同一轮问答的对话记录却正确落库为 student / 12
+ * </pre>
+ * （落库发生在业务线程上、身份正确；工具在别的线程上、身份为空。
+ * 空身份在 {@code toolFunctions()} 里走 else 分支被当成教师，于是学员眼睁睁被"降级"。）
+ *
+ * <p>所以这里在<b>构造时</b>（还在业务线程、上下文一定有效）把身份快照下来，
+ * 每次执行工具前绑回当前线程、执行完还原。一处兜住，同步 / 流式 / 未来任何线程模型都不用再操心。
  */
 @Slf4j
 public abstract class AbstractToolFunctions {
@@ -39,11 +58,22 @@ public abstract class AbstractToolFunctions {
     /** 真正的工具实现 */
     protected final AiToolService toolService;
 
+    /**
+     * 构造时捕获的身份快照，执行工具前绑回当前线程。
+     * <p>只取 {@code Authentication} 不可变对象复制一份，不共享整个 {@code SecurityContext}，
+     * 避免多线程读写同一个上下文实例。
+     */
+    private final SecurityContext identity;
+
     /** 本次问答的工具调用轨迹，按发生顺序追加 */
     private final List<AiAnswerVO.ToolTrace> traces = new ArrayList<>();
 
     protected AbstractToolFunctions(AiToolService toolService) {
         this.toolService = toolService;
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        SecurityContext snapshot = SecurityContextHolder.createEmptyContext();
+        snapshot.setAuthentication(auth);
+        this.identity = snapshot;
     }
 
     /** 本次问答实际调用过的工具（拷贝出去，防止调用方改到内部列表） */
@@ -67,12 +97,18 @@ public abstract class AbstractToolFunctions {
     protected String run(String name, String argsSummary, Supplier<String> action) {
         boolean success = true;
         String text;
+        // 工具可能在别的线程上执行（流式就是），先把这个请求的身份绑到当前线程，
+        // 执行完还原 —— 不能只 clear()，因为线程会被复用，清掉别人的上下文同样是事故。
+        SecurityContext previous = SecurityContextHolder.getContext();
+        SecurityContextHolder.setContext(identity);
         try {
             text = action.get();
         } catch (Exception e) {
             success = false;
             log.error("工具 {} 执行失败", name, e);
             text = "工具执行失败：" + e.getMessage();
+        } finally {
+            SecurityContextHolder.setContext(previous);
         }
         traces.add(AiAnswerVO.ToolTrace.of(name, ToolSpecs.label(name), argsSummary, success));
         return text;
