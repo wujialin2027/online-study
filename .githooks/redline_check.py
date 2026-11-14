@@ -45,6 +45,21 @@ ALLOWED_MD = (
 # 二进制附件：只允许演示种子数据（前端演示时课件下载、批改面板要能点开）
 ALLOWED_BINARY = re.compile(r"^online_study_backend/uploads/demo-[^/]+\.(png|jpg|jpeg|pdf)$")
 
+# 路径段黑名单（第三层检查，2026-11-14 加）。
+#
+# 为什么需要它：前两层都是按「文件的顶层目录」判的。如果有人在
+# online_study_backend/src/main/java/ 下建一个 面试材料/ 再往里塞 .java，
+# 顶层是 online_study_backend（在白名单里）、扩展名是 .java（在白名单里），
+# 两道检查全部放行 —— 个人材料就跟着代码进仓库了。
+#
+# 所以按「路径里的每一段」再查一道：
+#   · 中文关键词：代码目录里不会出现中文名，命中即异常，零误报
+#   · 英文关键词：只做**整段全匹配**（^...$），否则 templates 会因为含 "temp" 被误伤
+SUSPECT_SEGMENT_CN = re.compile(
+    r"(简历|面试|投递|秋招|春招|求职|面经|挂科|绩点|身份证|学号|个人材料|备份|草稿|笔记)")
+SUSPECT_SEGMENT_EN = re.compile(
+    r"(?i)^(backup|bak|tmp|temp|draft|private|secret|notes?|old|archive|misc|todo)$")
+
 # 代码/配置类扩展名白名单
 ALLOWED_CODE_EXT = {
     ".java", ".kt", ".xml", ".yml", ".yaml", ".properties", ".sql", ".json",
@@ -60,6 +75,9 @@ HARD_BLOCK_NAME = [
     (re.compile(r"\.(key|pem|p12|pfx|jks|keystore)$"), "certificate or private key"),
     (re.compile(r"(^|/)id_rsa(\.pub)?$"), "SSH key"),
     (re.compile(r"\.(log|class|jar|war)$"), "build output or log"),
+    # 版本控制 / 手工编辑残留：未解决的合并冲突片段（*.orig / *.rej）会把别人的
+    # 旧版本代码一起带进来，*.bak 常是"改之前先存一份"，里面可能有真实配置。
+    (re.compile(r"\.(bak|orig|rej|swp|swo)$"), "editor or merge leftover"),
 ]
 
 # ==================== 2. 内容规则 ====================
@@ -105,6 +123,7 @@ def show(name):
 def check_paths(paths, problems, warns):
     for f in paths:
         top = f.split("/")[0]
+        blocked = False
 
         # 1) 顶层不在允许清单 —— 这是最重要的一条
         if top not in ALLOWED_TOP:
@@ -114,8 +133,19 @@ def check_paths(paths, problems, warns):
                 % (show(f), show(top)))
             continue
 
+        # 1.5) 路径段黑名单：顶层过了不代表里面干净
+        #      只看目录段（[:-1]），文件名归下面 2) 的硬黑名单管
+        for seg in f.split("/")[:-1]:
+            if SUSPECT_SEGMENT_CN.search(seg) or SUSPECT_SEGMENT_EN.match(seg):
+                problems.append(
+                    "SUSPECT-SEGMENT  %s -- path segment '%s' looks like personal / temporary "
+                    "material; move it out of the repo tree or rename it" % (show(f), show(seg)))
+                blocked = True
+                break
+        if blocked:
+            continue
+
         # 2) 硬黑名单
-        blocked = False
         for rule, why in HARD_BLOCK_NAME:
             if rule.search(f):
                 problems.append("FORBIDDEN-NAME   %s -- %s" % (show(f), why))
@@ -203,6 +233,65 @@ def check_sizes(paths, problems):
             problems.append("TOO-LARGE        %s -- %.1f MB (limit 5 MB)" % (show(f), size / 1048576.0))
 
 
+def scan_disk_top(problems, warns, blocking):
+    """扫磁盘上**真实存在**的顶层条目 —— 这一层完全不看 git。
+
+    为什么需要这第三道检查（2026-11-14 加）
+    ----------------------------------------
+    前两道检查都基于「路径清单」：pre-commit 看暂存区，pre-push 看 diff。
+    它们有一个共同盲区 ——
+    **磁盘上新建了一个目录，但里面还没有文件被 git add，清单里就永远不会出现它。**
+    等到哪天顺手 git add -A 或 git commit -a，它才第一次进入检查视野，
+    而那时内容已经在暂存区了，只能事后补救。
+
+    所以这里反过来做：列出磁盘上每个顶层条目，分三类
+      · 在白名单里            → 正常，属于仓库
+      · 被 .gitignore 挡住    → 本地目录，正常，但仍然打印出来（每次都能看见全景）
+      · 既不在白名单也没被忽略 → **新建的、还没有归属的目录**，必须当场人工定性
+
+    push 模式下第三类直接**拦截**；staged 模式只告警 ——
+    提交不该被一个临时目录卡住，但推送前一定要过这道。
+
+    输出说明
+    --------
+    三段清单每次都打印（不只是出问题时），因为"这次有哪些本地目录存在"
+    本身就是做决定要看的底账。
+    """
+    try:
+        entries = sorted(os.listdir("."))
+    except OSError as e:
+        warns.append("disk-scan-failed  cannot list repo root: %s" % e)
+        return
+
+    normal, local_only, unknown = [], [], []
+    for name in entries:
+        if name == ".git":
+            continue
+        if name in ALLOWED_TOP:
+            normal.append(name)
+            continue
+        # 用 git 自己判断是否被忽略 —— 不要在脚本里重新实现一遍 .gitignore 的匹配语义
+        if subprocess.run(["git", "check-ignore", "-q", name]).returncode == 0:
+            local_only.append(name)
+        else:
+            unknown.append(name)
+
+    sys.stderr.write("\n[disk] top-level entries in repo root (%d, .git excluded):\n"
+                     % (len(entries) - 1))
+    sys.stderr.write("  in allowlist    : %s\n" % (", ".join(normal) or "-"))
+    sys.stderr.write("  ignored (local) : %s\n" % (", ".join(local_only) or "-"))
+    sys.stderr.write("  UNCLASSIFIED    : %s\n" % (", ".join(unknown) or "-"))
+
+    for name in unknown:
+        msg = ("UNKNOWN-TOP      %s -- exists on disk but is neither in ALLOWED_TOP nor ignored; "
+               "decide now: local-only -> add to .gitignore, or belongs in repo -> add to ALLOWED_TOP "
+               "(and tell the owner why)" % show(name))
+        if blocking:
+            problems.append(msg)
+        else:
+            warns.append(msg)
+
+
 def report(problems, warns, mode, count=0):
     if warns:
         sys.stderr.write("\n[%s] %d item(s) worth a look (not blocking):\n" % (mode, len(warns)))
@@ -231,10 +320,19 @@ def main():
     problems, warns = [], []
     count = 0
 
+    if mode not in ("staged", "push"):
+        sys.stderr.write("unknown mode: %s\n" % mode)
+        return 2
+
+    # 第三道检查：扫磁盘上所有顶层条目，跟 git 暂存区无关。
+    # 放在最前面，这样即使这次没有文件要提交，也能看到他本机又多出了哪些目录。
+    scan_disk_top(problems, warns, blocking=(mode == "push"))
+
     if mode == "staged":
         paths = [f for f in git("diff", "--cached", "--name-only", "--diff-filter=ACM").splitlines() if f.strip()]
         if not paths:
-            return 0
+            # 没有暂存文件也要把磁盘清单报出来，不能静默退出
+            return report(problems, warns, mode, 0)
         check_paths(paths, problems, warns)
         check_doc_content(paths, problems, warns)
         check_sizes(paths, problems)
@@ -258,7 +356,7 @@ def main():
 
         paths = sorted(paths)
         if not paths:
-            return 0
+            return report(problems, warns, mode, 0)
         count = len(paths)
         check_paths(paths, problems, warns)
         check_doc_content(paths, problems, warns)
